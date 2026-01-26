@@ -10,7 +10,7 @@
 
 from gnuradio import gr, digital
 
-from ... import nrzi_decode, hdlc_deframer
+from ... import nrzi_decode, hdlc_deframer, pdu_length_filter
 
 
 class ax25_deframer(gr.hier_block2):
@@ -39,6 +39,7 @@ class ax25_deframer(gr.hier_block2):
         if g3ruh_scrambler:
             self.descrambler = digital.descrambler_bb(0x21, 0, 16)
         self.deframer = hdlc_deframer(True, 10000)
+        self.length_filter = pdu_length_filter(16, 10000)
 
         self._blocks = [self, self.slicer, self.nrzi]
         if g3ruh_scrambler:
@@ -46,4 +47,5 @@ class ax25_deframer(gr.hier_block2):
         self._blocks += [self.deframer]
 
         self.connect(*self._blocks)
-        self.msg_connect((self.deframer, 'out'), (self, 'out'))
+        self.msg_connect((self.deframer, 'out'), (self.length_filter, 'in'))
+        self.msg_connect((self.length_filter, 'out'), (self, 'out'))
