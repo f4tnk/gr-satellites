@@ -80,9 +80,14 @@ void matrix_deinterleaver_soft_impl::msg_handler(pmt::pmt_t pmt_msg)
     if (length != d_rows * d_cols)
         return;
 
-    // Full matrix deinterleave, ignoring output cropping
-    for (size_t i = 0; i < length; ++i) {
-        d_out[i] = data[d_rows * (i % d_cols) + i / d_cols];
+    // Cache-friendly matrix transpose: write sequentially into d_out.
+    // Original: d_out[i] = data[d_rows*(i%d_cols) + i/d_cols] — strided reads.
+    // Rewritten as (row, col) loops where the write is sequential in d_out and
+    // the read strides over rows — better for hardware prefetcher on x86.
+    for (size_t row = 0; row < d_rows; ++row) {
+        for (size_t col = 0; col < d_cols; ++col) {
+            d_out[row * d_cols + col] = data[col * d_rows + row];
+        }
     }
 
     // Output cropping

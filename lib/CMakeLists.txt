@@ -69,6 +69,7 @@ list(APPEND satellites_sources
     nrzi_encode_impl.cc
     nusat_decoder_impl.cc
     rms_agc_cc_impl.cc
+    rms_agc_ff_impl.cc
     packet_csma_impl.cc
     pdu_add_meta_impl.cc
     pdu_head_tail_impl.cc

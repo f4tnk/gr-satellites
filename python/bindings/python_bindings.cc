@@ -46,6 +46,7 @@ void bind_nrzi_decode(py::module& m);
 void bind_nrzi_encode(py::module& m);
 void bind_nusat_decoder(py::module& m);
 void bind_rms_agc_cc(py::module& m);
+void bind_rms_agc_ff(py::module& m);
 void bind_packet_csma(py::module& m);
 void bind_pdu_add_meta(py::module& m);
 void bind_pdu_head_tail(py::module& m);
@@ -112,6 +113,7 @@ PYBIND11_MODULE(satellites_python, m)
     bind_nrzi_encode(m);
     bind_nusat_decoder(m);
     bind_rms_agc_cc(m);
+    bind_rms_agc_ff(m);
     bind_packet_csma(m);
     bind_pdu_add_meta(m);
     bind_pdu_head_tail(m);

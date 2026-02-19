@@ -54,6 +54,7 @@ list(APPEND satellites_python_files
     nrzi_encode_python.cc
     nusat_decoder_python.cc
     rms_agc_cc_python.cc
+    rms_agc_ff_python.cc
     packet_csma_python.cc
     pdu_add_meta_python.cc
     pdu_head_tail_python.cc
@@ -74,5 +75,16 @@ GR_PYBIND_MAKE_OOT(satellites
    ../..
    gr::satellites
    "${satellites_python_files}")
+
+# F4TNK: copy pydoc templates from docstrings/ to the binary dir so the new
+# bindings can find their *_pydoc.h headers at compile time.
+foreach(_f rms_agc_cc rms_agc_ff)
+    if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/${_f}_pydoc.h")
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/docstrings/${_f}_pydoc_template.h"
+            "${CMAKE_CURRENT_BINARY_DIR}/${_f}_pydoc.h"
+            COPYONLY)
+    endif()
+endforeach()
 
 install(TARGETS satellites_python DESTINATION ${GR_PYTHON_DIR}/satellites COMPONENT pythonapi)
