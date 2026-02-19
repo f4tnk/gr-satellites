@@ -18,14 +18,9 @@ from . import crc, hdlc
 
 
 def pack(s):
-    d = bytearray()
-    for i in range(0, len(s), 8):
-        x = 0
-        for j in range(7, -1, -1):  # LSB first
-            x <<= 1
-            x += s[i+j]
-        d.append(x)
-    return d
+    # LSB-first packing: bit[0] is LSB of byte[0], bit[7] is MSB of byte[0]
+    # numpy.packbits with bitorder='little' maps index 0 → bit 0 (LSB), identical semantics
+    return numpy.packbits(numpy.array(s, dtype=numpy.uint8), bitorder='little').tobytes()
 
 
 class hdlc_crc_check:

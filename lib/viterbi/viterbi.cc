@@ -162,14 +162,15 @@ void ViterbiCodec::UpdatePathMetrics(const std::string& bits,
         new_trellis_column[i] = p.second;
     }
 
-    *path_metrics = new_path_metrics;
-    trellis->push_back(new_trellis_column);
+    *path_metrics = std::move(new_path_metrics);
+    trellis->push_back(std::move(new_trellis_column));
 }
 
 std::string ViterbiCodec::Decode(const std::string& bits) const
 {
     // Compute path metrics and generate trellis.
     Trellis trellis;
+    trellis.reserve(bits.size() / num_parity_bits());
     std::vector<int> path_metrics(1 << (constraint_ - 1),
                                   std::numeric_limits<int>::max());
     path_metrics.front() = 0;
@@ -186,10 +187,11 @@ std::string ViterbiCodec::Decode(const std::string& bits) const
 
     // Traceback.
     std::string decoded;
+    decoded.reserve(trellis.size());
     int state =
         std::min_element(path_metrics.begin(), path_metrics.end()) - path_metrics.begin();
     for (int i = trellis.size() - 1; i >= 0; i--) {
-        decoded += state >> (constraint_ - 2) ? "1" : "0";
+        decoded.push_back(state >> (constraint_ - 2) ? '1' : '0');
         state = trellis[i][state];
     }
     std::reverse(decoded.begin(), decoded.end());

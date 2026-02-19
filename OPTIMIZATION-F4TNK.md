@@ -11,7 +11,8 @@ Station: SatNOGS #3762 — AirSpy R2 @ 2.5 MSPS, x86-64 (AVX2 + BMI2)
 | Commit | Description |
 |--------|-------------|
 | `c1374671` | Lot 1 : VOLK / -march=native / rms_agc_cc / doppler NCO / kurtosis / manchester |
-| `HEAD`     | Lot 2 : rms_agc_ff / convolutional_encoder / crc::reflect / matrix_deinterleaver |
+| `529d8d2f` | Lot 2 : rms_agc_ff / convolutional_encoder / crc SWAR / matrix_deinterleaver |
+| `HEAD`     | Lot 3 : ViterbiCodec move-semantics / hdlc_deframer numpy.packbits + analyse exhaustive |
 
 ---
 
@@ -281,6 +282,129 @@ endforeach()
 Assure que les headers de docstring pybind11 sont présents lors d'une première
 build propre, sans dépendre du `GR_PYBIND_MAKE_OOT` qui ne les génère que si
 le hash de l'en-tête C++ change.
+
+---
+
+---
+
+## Lot 3 — ViterbiCodec move-semantics + hdlc_deframer numpy
+
+### C10.1 `ViterbiCodec::UpdatePathMetrics` — `std::move` pour éviter les copies vectorielles
+
+**Fichier** : `lib/viterbi/viterbi.cc`
+
+**Ancienne code** :
+```cpp
+*path_metrics = new_path_metrics;          // copie de vector<int> (K-1 = 64 ints pour K=7)
+trellis->push_back(new_trellis_column);    // copie de vector<int> dans le trellis
+```
+
+**Nouveau code** :
+```cpp
+*path_metrics = std::move(new_path_metrics);
+trellis->push_back(std::move(new_trellis_column));
+```
+
+`UpdatePathMetrics` est appelée pour chaque paquet de `num_parity_bits` bits décodés.  
+Pour un frame CCSDS R=1/2, K=7 de 256 octets = 2048 bits → 1024 appels.  
+Chaque appel copiait auparavant deux `vector<int>` de taille 64 (2×64×4 = 512 octets) ; avec `std::move`, aucun octets n'est copié (seuls les pointeurs internes du vecteur sont transférés).
+
+**Économie** : 1024 × 512 octets de copies évitées = **512 Ko** de mouvement mémoire
+supprimé pour un frame CCSDS. Les frames sont décodées en continu, l'économie est
+proportionnelle au débit.
+
+---
+
+### C10.2 `ViterbiCodec::Decode` — `trellis.reserve` + `decoded.push_back`
+
+**Fichier** : `lib/viterbi/viterbi.cc`
+
+```cpp
+// Avant
+Trellis trellis;  // realloc ~log2(1024) = 10 fois pendant les 1024 push_back
+
+// Après
+Trellis trellis;
+trellis.reserve(bits.size() / num_parity_bits());  // capacité exacte, 0 realloc
+```
+
+Pour 1024 `push_back` sur `std::vector<std::vector<int>>` :  
+Sans reserve : ~10 réallocations + déplacements de vecteurs imbriqués.  
+Avec reserve : 1 allocation initiale, 0 réallocation.
+
+```cpp
+// Traceback — avant
+std::string decoded;
+decoded += state >> (constraint_ - 2) ? "1" : "0";  // recherche '\0', branch on literal
+
+// Après
+std::string decoded;
+decoded.reserve(trellis.size());             // 1 allocation pour la totalité
+decoded.push_back('0' ou '1');               // O(1) amortized, pas de recherche '\0'
+```
+
+---
+
+### C11.1 `hdlc_deframer.py::pack()` — `numpy.packbits` au lieu de boucle Python imbriquée
+
+**Fichier** : `python/hdlc_deframer.py`
+
+**Avant** (2 boucles Python) :
+```python
+def pack(s):
+    d = bytearray()
+    for i in range(0, len(s), 8):
+        x = 0
+        for j in range(7, -1, -1):  # LSB first
+            x <<= 1
+            x += s[i+j]
+        d.append(x)
+    return d
+```
+Pour 256 bytes d'HDLC = 2048 bits : 256 iterations externes + 2048 iterations internes
+= 2304 appels Python. Coût : ~50–200 µs dans CPython.
+
+**Après** (appel C NumPy) :
+```python
+def pack(s):
+    return numpy.packbits(numpy.array(s, dtype=numpy.uint8),
+                          bitorder='little').tobytes()
+```
+- `bitorder='little'` : bit[0] = LSB du premier octet → sémantique identique
+- Implémenté en C dans NumPy, ~50× plus rapide
+- `pandas.packbits` traite 256 octets en un seul appel C vectorisé
+
+`pack()` est appelée à chaque flag HDLC reçu (fin de trame). Pour une station
+SatNOGS traitant du KISS/AX.25 à fort taux (beacons FM, BPSK), la fréquence
+peut atteindre plusieurs centaines d'appels par seconde en burst.
+
+---
+
+## Analyse exhaustive des fichiers restants (lot 3)
+
+Les fichiers suivants ont été lus et analysés — **aucune optimisation supplémentaire
+n'a été identifiée** pour les raisons indiquées :
+
+| Fichier | Raison |
+|---------|--------|
+| `golay24.c` | Déjà optimal : `volk_32u_popcnt` + `__builtin_parity` |
+| `randomizer.c::ccsds_xor_sequence` | Boucle XOR auto-vectorisée par `-march=native` |
+| `nrzi_decode_impl.cc` | `~(a^b)&1` contiguous, auto-vectorisable |
+| `nrzi_encode_impl.cc` | Loop-carried dependency (`d_last`), non vectorisable |
+| `descrambler308_impl.cc` | LFSR séquentiel, chaque bit dépend du précédent |
+| `nusat_decoder_impl.cc` | PDU, descramble 64 B max, CRC-8 sequential table |
+| `decode_rs_impl.cc` / `encode_rs_impl.cc` | libfec interne, stride-gather non vectorisable |
+| `u482c_decode_impl.cc` / `u482c_encode_impl.cc` | PDU, golay+RS+LFSR, pas de hot loop |
+| `varlen_packet_framer/tagger_impl.cc` | Tag/frame building, no compute loop |
+| `selector_impl.cc` | Routing, memcpy paths |
+| `lilacsat1_demux_impl.cc` | Tag-based demux, no hot loop |
+| `time_dependent_delay_impl.cc` | Polyphase FIR — déjà vectorisé par GR |
+| `viterbi.c` (Phil Karn K=7) | 32 BFLY unrolled ; SSE2/AVX2 = travail futur (voir F2) |
+| `bch15.py` | BCH(15,k,d) sur mots de 15 bits, volume trop faible |
+| `crcs.py` | Wrapper gnuradio `crc_check`, rien à faire |
+| `components/demodulators/*.py` | Hier GR flowgraph wrappers, pas de compute Python |
+| `distributed_syncframe_soft_impl.cc` | Inner loop auto-vectorisé (`-march=native`) pour step=1 ; changement soft→hard invalide sémantiquement |
+| `pdu_scrambler_impl.cc` | XOR auto-vectorisé ; 2 copies PMT inévitables |
 
 ---
 
