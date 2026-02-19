@@ -81,7 +81,9 @@ void manchester_sync_impl<gr_complex>::compute_abs(float* out,
                                                    const gr_complex* in,
                                                    int block_size)
 {
-    volk_32fc_magnitude_32f(out, in, block_size);
+    // Use magnitude_squared (avoids sqrt per element).
+    // |z1|^2 > |z2|^2  <=>  |z1| > |z2|, so the sync decision is identical.
+    volk_32fc_magnitude_squared_32f(out, in, block_size);
 }
 
 template <>

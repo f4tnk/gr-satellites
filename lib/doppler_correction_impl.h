@@ -14,6 +14,7 @@
 #include <satellites/doppler_correction.h>
 #include <cstdint>
 #include <vector>
+#include <volk/volk_alloc.hh>
 
 namespace gr {
 namespace satellites {
@@ -44,6 +45,12 @@ private:
 
     double d_current_time;
     double d_current_freq;
+
+    // Scratch buffers for vectorized NCO computation (VOLK)
+    volk::vector<float> d_phase_buf;   // negated phase ramp
+    volk::vector<float> d_cos_buf;     // cos(d_phase_buf)
+    volk::vector<float> d_sin_buf;     // sin(d_phase_buf)
+    volk::vector<gr_complex> d_nco_buf; // assembled NCO vector
 
     // Implementation taken from gr::block::control_loop
     void phase_wrap()

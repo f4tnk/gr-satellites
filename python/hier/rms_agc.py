@@ -8,10 +8,15 @@
 # Author: Daniel Estevez
 # Description: AGC using RMS
 # GNU Radio version: 3.8.0.0
+#
+# F4TNK optimization: replaced the 5-block hier chain
+#   (rms_cf → multiply_const_ff → add_const_ff → float_to_complex → divide_cc)
+# with the single-pass C++ rms_agc_cc block.  Same algorithm, no inter-block
+# copies, VOLK-accelerated |z|² computation.
 
-from gnuradio import blocks
 from gnuradio import gr
 from gnuradio.filter import firdes
+from .. import rms_agc_cc as _rms_agc_cc_block
 
 
 class rms_agc(gr.hier_block2):
@@ -19,54 +24,29 @@ class rms_agc(gr.hier_block2):
         gr.hier_block2.__init__(
             self,
             'RMS AGC',
-            gr.io_signature(1, 1, gr.sizeof_gr_complex*1),
-            gr.io_signature(1, 1, gr.sizeof_gr_complex*1),
+            gr.io_signature(1, 1, gr.sizeof_gr_complex * 1),
+            gr.io_signature(1, 1, gr.sizeof_gr_complex * 1),
         )
-        ##################################################
-        # Parameters
-        ##################################################
+
         self.alpha = alpha
         self.reference = reference
 
-        ##################################################
-        # Blocks
-        ##################################################
-        self.blocks_rms_xx_0 = blocks.rms_cf(alpha)
-        self.blocks_multiply_const_vxx_0 = (
-            blocks.multiply_const_ff(1.0/reference))
-        self.blocks_float_to_complex_0 = blocks.float_to_complex(1)
-        self.blocks_divide_xx_0 = blocks.divide_cc(1)
-        self.blocks_add_const_vxx_0 = blocks.add_const_ff(1e-19)
+        # Single C++ block replaces the previous 5-block chain
+        self.agc = _rms_agc_cc_block.make(float(alpha), float(reference))
 
-        ##################################################
-        # Connections
-        ##################################################
-        self.connect(
-            (self.blocks_add_const_vxx_0, 0),
-            (self.blocks_float_to_complex_0, 0))
-        self.connect((self.blocks_divide_xx_0, 0), (self, 0))
-        self.connect(
-            (self.blocks_float_to_complex_0, 0),
-            (self.blocks_divide_xx_0, 1))
-        self.connect(
-            (self.blocks_multiply_const_vxx_0, 0),
-            (self.blocks_add_const_vxx_0, 0))
-        self.connect(
-            (self.blocks_rms_xx_0, 0),
-            (self.blocks_multiply_const_vxx_0, 0))
-        self.connect((self, 0), (self.blocks_divide_xx_0, 0))
-        self.connect((self, 0), (self.blocks_rms_xx_0, 0))
+        self.connect((self, 0), self.agc, (self, 0))
 
     def get_alpha(self):
         return self.alpha
 
     def set_alpha(self, alpha):
         self.alpha = alpha
-        self.blocks_rms_xx_0.set_alpha(self.alpha)
+        self.agc.set_alpha(float(alpha))
 
     def get_reference(self):
         return self.reference
 
     def set_reference(self, reference):
         self.reference = reference
-        self.blocks_multiply_const_vxx_0.set_k(1.0/self.reference)
+        self.agc.set_reference(float(reference))
+

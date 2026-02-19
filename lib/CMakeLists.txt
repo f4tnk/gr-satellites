@@ -68,6 +68,7 @@ list(APPEND satellites_sources
     nrzi_decode_impl.cc
     nrzi_encode_impl.cc
     nusat_decoder_impl.cc
+    rms_agc_cc_impl.cc
     packet_csma_impl.cc
     pdu_add_meta_impl.cc
     pdu_head_tail_impl.cc
@@ -106,6 +107,9 @@ if(NOT satellites_sources)
 endif(NOT satellites_sources)
 
 add_library(gnuradio-satellites SHARED ${satellites_sources})
+if(NOT MSVC)
+    target_compile_options(gnuradio-satellites PRIVATE -march=native -O3)
+endif()
 target_link_libraries(gnuradio-satellites
 	gnuradio::gnuradio-runtime
 	gnuradio::gnuradio-blocks

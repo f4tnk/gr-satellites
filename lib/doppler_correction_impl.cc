@@ -11,6 +11,7 @@
 #include <gnuradio/expj.h>
 #include <gnuradio/io_signature.h>
 #include <spdlog/fmt/fmt.h>
+#include <volk/volk.h>
 #include <chrono>
 #include <fstream>
 #include <stdexcept>
@@ -140,6 +141,16 @@ int doppler_correction_impl::work(int noutput_items,
         }
     }
 
+    // Grow VOLK scratch buffers on first call or for large work sizes
+    if (static_cast<int>(d_phase_buf.size()) < noutput_items) {
+        d_phase_buf.resize(noutput_items);
+        d_cos_buf.resize(noutput_items);
+        d_sin_buf.resize(noutput_items);
+        d_nco_buf.resize(noutput_items);
+    }
+
+    // --- Pass 1: scalar phase ramp (interpolation + accumulation) ---
+    // Stores negated accumulated phase into d_phase_buf for VOLK NCO.
     double time = 0.0;
     double freq = 0.0;
     for (int j = 0; j < noutput_items; ++j) {
@@ -165,9 +176,16 @@ int doppler_correction_impl::work(int noutput_items,
         }
         d_phase += freq;
         phase_wrap();
-        const gr_complex nco = gr_expj(-static_cast<float>(d_phase));
-        gr::fast_cc_multiply(out[j], in[j], nco);
+        d_phase_buf[j] = static_cast<float>(-d_phase);
     }
+
+    // --- Pass 2: VOLK vectorized NCO (sincos + complex multiply) ---
+    volk_32f_cos_32f(d_cos_buf.data(), d_phase_buf.data(), noutput_items);
+    volk_32f_sin_32f(d_sin_buf.data(), d_phase_buf.data(), noutput_items);
+    for (int j = 0; j < noutput_items; ++j) {
+        d_nco_buf[j] = { d_cos_buf[j], d_sin_buf[j] };
+    }
+    volk_32fc_x2_multiply_32fc(out, in, d_nco_buf.data(), noutput_items);
 
     d_current_freq = freq;
     d_current_time = time;

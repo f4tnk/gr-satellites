@@ -47,6 +47,7 @@ install(FILES
     nrzi_decode.h
     nrzi_encode.h
     nusat_decoder.h
+    rms_agc_cc.h
     packet_csma.h
     pdu_add_meta.h
     pdu_head_tail.h
