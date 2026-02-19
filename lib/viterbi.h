@@ -31,4 +31,7 @@ void delete_viterbi_packed(void* vp);
 void encode_viterbi_packed(unsigned char* channel, unsigned char* data, int framebits);
 void set_viterbi_polynomial_packed(int16_t polys[2]);
 
+/* F4TNK: SIMD-accelerated ACS — runtime dispatch (AVX2 > SSE2 > scalar) */
+int update_viterbi_packed_simd(void* vp, unsigned char sym[], uint16_t npairs);
+
 #endif // VITERBI_H_

@@ -14,6 +14,8 @@
 #include <satellites/distributed_syncframe_soft.h>
 
 #include <vector>
+#include <volk/volk.h>
+#include <volk/volk_alloc.hh>
 
 namespace gr {
 namespace satellites {
@@ -24,6 +26,9 @@ private:
     const size_t d_threshold;
     const size_t d_step;
     std::vector<uint8_t> d_syncword;
+    // F4TNK: precomputed ±1.0f syncword for VOLK dot_prod (step=1 fast path)
+    volk::vector<float> d_syncword_soft;
+    float d_soft_threshold;
 
 public:
     distributed_syncframe_soft_impl(int threshold, const std::string& syncword, int step);

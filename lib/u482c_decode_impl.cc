@@ -138,7 +138,7 @@ void u482c_decode_impl::msg_handler(pmt::pmt_t pmt_msg)
             return;
         }
         init_viterbi_packed(d_vp, 0);
-        update_viterbi_packed(d_vp, packet, rx_len * 8 + VITERBI_CONSTRAINT - 1);
+        update_viterbi_packed_simd(d_vp, packet, rx_len * 8 + VITERBI_CONSTRAINT - 1);
         auto viterbi_res = chainback_viterbi_packed(d_vp, packet, rx_len * 8, 0);
         if (d_verbose) {
             std::printf("Viterbi decode bit errors: %d\n", viterbi_res);

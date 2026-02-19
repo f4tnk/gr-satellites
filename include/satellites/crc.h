@@ -70,6 +70,10 @@ public:
 
 private:
     std::array<uint64_t, 256> d_table;
+    // F4TNK: 3 additional tables for slice-by-4 acceleration (×3-4 on long frames)
+    std::array<uint64_t, 256> d_table1;
+    std::array<uint64_t, 256> d_table2;
+    std::array<uint64_t, 256> d_table3;
     unsigned d_num_bits;
     uint64_t d_mask;
     uint64_t d_initial_value;

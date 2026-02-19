@@ -69,6 +69,36 @@ crc::crc(unsigned num_bits,
             i <<= 1;
         } while (i < 256);
     }
+
+    // F4TNK: Build 3 additional tables for slice-by-4 acceleration.
+    // d_table1[i] = CRC of (d_table[i] >> 8) fed through d_table
+    // d_table2[i] = CRC of d_table1[i] fed through d_table, etc.
+    // This allows processing 4 bytes at a time in compute().
+    if (d_input_reflected) {
+        for (int i = 0; i < 256; ++i) {
+            d_table1[i] = d_table[(d_table[i]) & 0xff] ^ (d_table[i] >> 8);
+            d_table1[i] &= d_mask;
+        }
+        for (int i = 0; i < 256; ++i) {
+            d_table2[i] = d_table[(d_table1[i]) & 0xff] ^ (d_table1[i] >> 8);
+            d_table2[i] &= d_mask;
+        }
+        for (int i = 0; i < 256; ++i) {
+            d_table3[i] = d_table[(d_table2[i]) & 0xff] ^ (d_table2[i] >> 8);
+            d_table3[i] &= d_mask;
+        }
+    } else {
+        const unsigned shift = d_num_bits - 8;
+        for (int i = 0; i < 256; ++i) {
+            d_table1[i] = d_table[(d_table[i] >> shift) & 0xff] ^ ((d_table[i] << 8) & d_mask);
+        }
+        for (int i = 0; i < 256; ++i) {
+            d_table2[i] = d_table[(d_table1[i] >> shift) & 0xff] ^ ((d_table1[i] << 8) & d_mask);
+        }
+        for (int i = 0; i < 256; ++i) {
+            d_table3[i] = d_table[(d_table2[i] >> shift) & 0xff] ^ ((d_table2[i] << 8) & d_mask);
+        }
+    }
 }
 
 crc::~crc() {}
@@ -78,15 +108,40 @@ uint64_t crc::compute(const uint8_t* data, std::size_t len)
     uint64_t rem = d_initial_value;
 
     if (d_input_reflected) {
+        // F4TNK: slice-by-4 — process 4 bytes at a time
+        while (len >= 4) {
+            uint8_t b0 = data[0] ^ (uint8_t)(rem);
+            uint8_t b1 = data[1] ^ (uint8_t)(rem >> 8);
+            uint8_t b2 = data[2] ^ (uint8_t)(rem >> 16);
+            uint8_t b3 = data[3] ^ (uint8_t)(rem >> 24);
+            rem = d_table3[b0] ^ d_table2[b1] ^ d_table1[b2] ^ d_table[b3]
+                  ^ (rem >> 32);
+            data += 4;
+            len -= 4;
+        }
+        // Byte-by-byte tail
         for (std::size_t i = 0; i < len; ++i) {
-            uint8_t byte = data[i];
-            uint8_t idx = (rem ^ byte) & 0xff;
+            uint8_t idx = (rem ^ data[i]) & 0xff;
             rem = d_table[idx] ^ (rem >> 8);
         }
     } else {
+        const unsigned shift = d_num_bits - 8;
+        // F4TNK: slice-by-4 for non-reflected mode (only safe when num_bits >= 32)
+        if (d_num_bits >= 32) {
+            while (len >= 4) {
+                uint8_t b0 = data[0] ^ (uint8_t)(rem >> shift);
+                uint8_t b1 = data[1] ^ (uint8_t)(rem >> (shift - 8));
+                uint8_t b2 = data[2] ^ (uint8_t)(rem >> (shift - 16));
+                uint8_t b3 = data[3] ^ (uint8_t)(rem >> (shift - 24));
+                rem = d_table3[b0] ^ d_table2[b1] ^ d_table1[b2] ^ d_table[b3]
+                      ^ ((rem << 32) & d_mask);
+                data += 4;
+                len -= 4;
+            }
+        }
+        // Byte-by-byte tail (or full loop for num_bits < 32)
         for (std::size_t i = 0; i < len; ++i) {
-            uint8_t byte = data[i];
-            uint8_t idx = ((rem >> (d_num_bits - 8)) ^ byte) & 0xff;
+            uint8_t idx = ((rem >> shift) ^ data[i]) & 0xff;
             rem = (d_table[idx] ^ (rem << 8)) & d_mask;
         }
     }

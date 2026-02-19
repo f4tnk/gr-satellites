@@ -14,6 +14,7 @@
 
 #include "distributed_syncframe_soft_impl.h"
 #include <gnuradio/io_signature.h>
+#include <volk/volk.h>
 
 namespace gr {
 namespace satellites {
@@ -40,6 +41,17 @@ distributed_syncframe_soft_impl::distributed_syncframe_soft_impl(
     for (auto s : syncword)
         d_syncword.push_back(s & 1);
 
+    // F4TNK: precompute ±1.0f soft syncword for VOLK dot_prod (step=1)
+    d_syncword_soft.resize(d_syncword.size());
+    for (size_t j = 0; j < d_syncword.size(); ++j) {
+        // syncword bit 1 → expect negative soft symbol → multiply by -1
+        // syncword bit 0 → expect positive soft symbol → multiply by +1
+        d_syncword_soft[j] = d_syncword[j] ? -1.0f : 1.0f;
+    }
+    // Soft threshold: hard match >= N - threshold  ↔  dot_prod >= N - 2*threshold
+    // (each matching bit contributes +|x|≈+1, each mismatch -|x|≈-1)
+    d_soft_threshold = static_cast<float>(d_syncword.size() - 2 * d_threshold);
+
     set_history(d_syncword.size() * d_step);
 
     message_port_register_out(pmt::mp("out"));
@@ -54,21 +66,38 @@ int distributed_syncframe_soft_impl::work(int noutput_items,
                                           gr_vector_const_void_star& input_items,
                                           gr_vector_void_star& output_items)
 {
-    size_t match;
-
     const float* in = (const float*)input_items[0];
 
-    for (int i = 0; i < noutput_items; i++) {
-        match = 0;
-        for (size_t j = 0; j < d_syncword.size(); ++j) {
-            match += (in[i + j * d_step] < 0.0) ^ d_syncword[j];
+    if (d_step == 1) {
+        // F4TNK: VOLK dot_prod fast path for step=1
+        // Soft correlation: metric = Σ in[j] * syncword_soft[j]
+        // Positive metric indicates correlation; threshold scaled accordingly
+        const size_t sw_len = d_syncword.size();
+        for (int i = 0; i < noutput_items; i++) {
+            float metric;
+            volk_32f_x2_dot_prod_32f(&metric, in + i,
+                                     d_syncword_soft.data(), sw_len);
+            if (metric >= d_soft_threshold) {
+                message_port_pub(
+                    pmt::mp("out"),
+                    pmt::cons(pmt::PMT_NIL,
+                              pmt::init_f32vector(sw_len, in + i)));
+            }
         }
-        if (match >= d_syncword.size() - d_threshold) {
-            // sync found
-            message_port_pub(
-                pmt::mp("out"),
-                pmt::cons(pmt::PMT_NIL,
-                          pmt::init_f32vector(d_syncword.size() * d_step, in + i)));
+    } else {
+        // Original scalar path for step > 1 (gather pattern not VOLK-able)
+        for (int i = 0; i < noutput_items; i++) {
+            size_t match = 0;
+            for (size_t j = 0; j < d_syncword.size(); ++j) {
+                match += (in[i + j * d_step] < 0.0) ^ d_syncword[j];
+            }
+            if (match >= d_syncword.size() - d_threshold) {
+                message_port_pub(
+                    pmt::mp("out"),
+                    pmt::cons(pmt::PMT_NIL,
+                              pmt::init_f32vector(d_syncword.size() * d_step,
+                                                  in + i)));
+            }
         }
     }
 

@@ -84,6 +84,7 @@ list(APPEND satellites_sources
     varlen_packet_framer_impl.cc
     varlen_packet_tagger_impl.cc
     viterbi.c
+    viterbi_simd.c
     viterbi_decoder_impl.cc
     libfec/decode_rs_8.c
     libfec/decode_rs_ccsds.c
@@ -114,7 +115,8 @@ endif()
 target_link_libraries(gnuradio-satellites
 	gnuradio::gnuradio-runtime
 	gnuradio::gnuradio-blocks
-	gnuradio::gnuradio-digital)
+	gnuradio::gnuradio-digital
+	Volk::volk)
 target_include_directories(gnuradio-satellites
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
     PUBLIC $<INSTALL_INTERFACE:include>

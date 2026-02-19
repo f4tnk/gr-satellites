@@ -59,7 +59,8 @@ struct v27 {
     uint16_t dlen;         /* Length of decisions array for block */
 };
 
-static branchtab_t branchtab[2];
+/* Not static: shared with viterbi_simd.c for SIMD ACS kernels */
+branchtab_t branchtab[2];
 static struct v27 v27_local;
 static decision_t decisions_local;
 
