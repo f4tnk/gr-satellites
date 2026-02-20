@@ -60,6 +60,11 @@ int kurtosis_impl::work(int noutput_items,
             float sum2 = 0.0f, sum4 = 0.0f;
             volk_32f_accumulator_s32f(&sum2, d_sq.data(), d_block_size);
             volk_32f_accumulator_s32f(&sum4, d_sq4.data(), d_block_size);
+            // F4TNK: Guard against zero-power input (0/0 = NaN)
+            if (sum2 == 0.0f) {
+                out[j * d_vlen + k] = 0.0f;
+                continue;
+            }
             const float kurt =
                 M / (M - 1.0f) * ((M + 1.0f) * sum4 / (sum2 * sum2) - 2.0f);
             out[j * d_vlen + k] = kurt;

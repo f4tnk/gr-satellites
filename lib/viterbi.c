@@ -287,7 +287,7 @@ int update_viterbi_packed(void* p, uint8_t* syms, uint16_t nbits)
         vp->new_metrics = tmp;
     }
 
-    vp->dp = d;
+    vp->dp = dp;  /* F4TNK: Was `d` (local scratch) instead of `dp` (advanced output pointer) */
     return 0;
 }
 

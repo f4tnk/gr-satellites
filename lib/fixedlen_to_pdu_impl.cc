@@ -93,6 +93,15 @@ int fixedlen_to_pdu_impl::work(int noutput_items,
         d_packet_infos.push_back(info);
     }
 
+    // F4TNK: Limit pending queue to prevent unbounded memory growth from false syncwords
+    static constexpr size_t MAX_PENDING_PACKETS = 256;
+    if (d_packet_infos.size() > MAX_PENDING_PACKETS) {
+        d_logger->warn("Dropping {} stale packet_info entries (queue overflow)",
+                       d_packet_infos.size() - MAX_PENDING_PACKETS);
+        d_packet_infos.erase(d_packet_infos.begin(),
+                             d_packet_infos.begin() + (d_packet_infos.size() - MAX_PENDING_PACKETS));
+    }
+
     const auto nitems = nitems_read(0);
     d_new_packet_infos.clear();
     for (const auto& info : d_packet_infos) {

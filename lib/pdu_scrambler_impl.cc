@@ -54,6 +54,7 @@ void pdu_scrambler_impl::msg_handler(pmt::pmt_t pmt_msg)
 
     if (msg.size() > d_sequence.size()) {
         d_logger->error("PDU longer than scrambler sequence; dropping");
+        return;  // F4TNK: Was missing — fell through to XOR loop with OOB d_sequence read
     }
 
     for (size_t j = 0; j < msg.size(); ++j) {

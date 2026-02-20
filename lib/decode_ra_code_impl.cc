@@ -41,7 +41,7 @@ decode_ra_code_impl::decode_ra_code_impl(int size)
       d_size(size)
 {
     d_ra_context = std::unique_ptr<struct ra_context>(new struct ra_context);
-    d_ra_out.reserve(d_size);
+    d_ra_out.resize(d_size);  // F4TNK: Was reserve() — UB on data() access with size()==0
 
     message_port_register_out(pmt::mp("out"));
     message_port_register_in(pmt::mp("in"));

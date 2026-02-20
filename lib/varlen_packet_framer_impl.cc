@@ -59,7 +59,8 @@ varlen_packet_framer_impl::varlen_packet_framer_impl(const std::string& packet_k
     }
 
     d_header_length = ((d_header_length + 7) / 8) * 8;
-    d_header_length = std::max(32, std::min(8, d_header_length));
+    // F4TNK: Was max(32,min(8,x)) which always returned 32. Correct: clamp [8,32]
+    d_header_length = std::min(32, std::max(8, d_header_length));
 
     if (d_use_golay)
         d_header_length = 24;

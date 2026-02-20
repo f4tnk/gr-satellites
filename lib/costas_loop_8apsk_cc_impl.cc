@@ -53,8 +53,10 @@ int costas_loop_8apsk_cc_impl::work(int noutput_items,
     // F4TNK: Mini-batch VOLK rotator path when diagnostic ports are not connected.
     // Instead of computing gr_expj() per sample, apply a VOLK rotator for M samples
     // and update the loop only once per batch. Saves (M-1) sin/cos per batch.
+    // F4TNK: Reduced BATCH from 8 to 2 to prevent tracking loss at low SNR/high Doppler.
+    // Batch=2 gives 50% sin/cos savings while maintaining 1/2-rate loop update.
     if (!freq_out) {
-        static constexpr int BATCH = 8;
+        static constexpr int BATCH = 2;
         int j = 0;
         while (j < noutput_items) {
             const int batch = std::min(BATCH, noutput_items - j);
