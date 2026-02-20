@@ -573,3 +573,18 @@ volk_profile -j $(nproc)
 ```
 Cela crée `~/.volk/volk_config` avec les meilleurs kernels SIMD détectés pour
 `volk_32fc_magnitude_squared_32f`, `volk_32f_x2_multiply_32f`, etc.
+
+---
+
+## Session 3: UDP Source Parameters Fix (2026-02-20)
+
+### S-UDP1. source_zeros=True — Prevent Scheduler Backoff [CRITICAL]
+**File**: `apps/gr_satellites`  
+**Issue**: `network.udp_source()` was created with `source_zeros=False`. When work() returned 0 (no data momentarily), the TPB scheduler forced the source into `BLKD_IN` state (50ms backoff). At 313 pkts/sec (57600 sps), this caused 93-95% packet loss.  
+**Fix**: Changed to `source_zeros=True`. Outputs zeros during transient gaps, keeping scheduler in READY state (immediate re-invocation). Benign for decoders — zeros produce DC/silence, no false frame triggers.
+
+### S-UDP2. notify_missed=True — Enable Drop Diagnostics [LOW]
+**File**: `apps/gr_satellites`  
+**Fix**: Changed `notify_missed` from `False` to `True`. No effect with HEADERTYPE_NONE (current), but enables packet loss warnings if sequence numbering is added later.
+
+**Combined with GnuRadio drain-loop fix (commit 72ae60805), eliminates the 93-95% packet loss.**
