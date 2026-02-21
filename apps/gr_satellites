@@ -10,8 +10,10 @@
 
 import argparse
 import json
+import os
 import signal
 import sys
+import threading
 
 from gnuradio import gr, blocks, audio
 
@@ -401,10 +403,19 @@ def main():
 
     tb = gr_satellites_top_block(parser)
 
+    # F4TNK: Robust signal handler with timeout.
+    # The original handler called tb.stop() + tb.wait() which can block
+    # indefinitely if a GR block's work() is stuck (e.g., udp_source with
+    # source_zeros=True continuously outputs, keeping downstream busy).
+    # satnogs-client sends SIGTERM, waits 10s, then SIGKILL. We add a 5s
+    # timeout on tb.wait() so the process exits cleanly before the force-kill.
     def sig_handler(sig=None, frame=None):
         tb.stop()
-        tb.wait()
-        sys.exit(0)
+        # Use a thread with timeout to avoid blocking forever on tb.wait()
+        waiter = threading.Thread(target=tb.wait, daemon=True)
+        waiter.start()
+        waiter.join(timeout=5.0)
+        os._exit(0)
 
     signal.signal(signal.SIGINT, sig_handler)
     signal.signal(signal.SIGTERM, sig_handler)
