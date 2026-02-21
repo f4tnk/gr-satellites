@@ -97,7 +97,8 @@ class extract_payload(gr.basic_block):
         # Drop final padding
         packet = packet[:-11]
         # Check CRC (do not include first 4 bytes)
-        crc_val = self.crc_calc.compute(packet[4:-2])
+        # convert to list[int] for pybind11 crc.compute() (Python 3.13)
+        crc_val = self.crc_calc.compute(list(packet[4:-2]))
         if crc_val != struct.unpack('<H', packet[-2:])[0]:
             if self.verbose:
                 print('CRC failed')

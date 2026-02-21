@@ -66,7 +66,8 @@ class crc16_usb:
     def check(self, frame):
         if len(frame) <= 2:
             return False
-        out = self.c.compute(frame[:-2])
+        # convert to list[int] for pybind11 crc.compute() (Python 3.13)
+        out = self.c.compute(list(frame[:-2]))
         return frame[-2] == (out & 0xff) and frame[-1] == ((out >> 8) & 0xff)
 
 
