@@ -135,6 +135,17 @@ def argument_parser():
         '--hexdump', action='store_true',
         help='Hexdump instead of telemetry parse')
     p_output.add_argument('--dump_path', help='Path to dump internal signals')
+
+    p_filter = p.add_argument_group('transmitter filtering')
+    p_filter.add_argument(
+        '--baudrate', type=float, default=None, dest='filter_baudrate',
+        help='Only instantiate transmitter chains matching this baudrate '
+             '(saves CPU when satellite has multiple transmitters)')
+    p_filter.add_argument(
+        '--modulation', type=str, default=None, dest='filter_modulation',
+        help='Only instantiate transmitter chains matching this '
+             'modulation family: FSK, BPSK, AFSK '
+             '(e.g. FSK also matches FSK subaudio)')
     return p
 
 

@@ -14,6 +14,8 @@ Station: SatNOGS #3762 — AirSpy R2 @ 2.5 MSPS, x86-64 (AVX2 + BMI2)
 | `529d8d2f` | Lot 2 : rms_agc_ff / convolutional_encoder / crc SWAR / matrix_deinterleaver |
 | `3a650f4e` | Lot 3 : ViterbiCodec move-semantics / hdlc_deframer numpy + analyse exhaustive |
 | `da463703` | Lot 4 : F2–F6 — Viterbi SIMD / CRC slice-by-4 / VOLK syncframe / PN9 natif / Costas mini-batch |
+| `e7f182ee` | C++ hdlc_deframer pybind11 (×900) + fix crc.compute() bytes Python 3.13 |
+| `b5ac6076` | TX filter `--baudrate` + `--modulation` — `_MODULATION_FAMILY`, GFSK/GMSK/MSK→FSK |
 
 ---
 
@@ -657,3 +659,125 @@ def sig_handler(sig=None, frame=None):
     os._exit(0)               # hard exit bypasses stuck threads
 ```
 Process now exits cleanly within 5 seconds of SIGTERM, well before the 10s force-kill deadline. Uses `os._exit()` instead of `sys.exit()` because `sys.exit()` only raises `SystemExit` which can be caught/blocked by running threads.
+
+---
+
+## Session 6: C++ hdlc_deframer Rewrite (2026-02-21)
+
+### S6-1. Python 3.13 `crc.compute()` TypeError Fix [CRITICAL]
+
+**Files**: `python/hdlc_deframer.py`, `python/components/deframers/ax5043_deframer.py`,
+`python/components/deframers/ideassat_deframer.py`
+
+**Root cause**: On Python 3.13, the pybind11 `crc.compute()` binding does **not** accept
+`bytes` objects directly. Calling `self.crc.compute(frame[:-2])` where `frame` is `bytes`
+raises `TypeError`. This crashed the GNU Radio scheduler thread silently — no frames decoded
+but no visible error in logs.
+
+**Fix**: Convert to `list()` before passing to `crc.compute()`:
+```python
+# Before — crashes on Python 3.13 pybind11
+crc_ok = self.crc.compute(frame[:-2]) == ...
+
+# After
+crc_ok = self.crc.compute(list(frame[:-2])) == ...
+```
+
+Applied to 3 files: `hdlc_deframer.py` (`fcs_ok()`), `ax5043_deframer.py`, `ideassat_deframer.py`.
+
+### S6-2. C++ hdlc_deframer — Full Rewrite with pybind11 [HIGH]
+
+**Files**: `lib/hdlc_deframer_impl.{h,cc}` (new C++), `include/satellites/hdlc_deframer.h` (new),
+`python/bindings/hdlc_deframer_python.cc` (new pybind11), `python/hdlc_deframer.py` (C++ dispatch)
+
+Complete rewrite of the HDLC deframer from Python to C++ with pybind11 binding.
+The Python implementation used nested loops for bit-unstuffing, byte packing, and CRC-16
+verification — extremely slow under CPython.
+
+**Architecture**:
+```
+Python hdlc_deframer.py
+  → try: import satellites.hdlc_deframer_cpp (C++ pybind11)
+  → except: fallback to pure-Python implementation
+```
+
+**C++ implementation**:
+- `deframe()`: processes raw bit buffer, identifies HDLC flag sequences (`0x7E`),
+  performs bit-unstuffing, packs bits to bytes, verifies CRC-16/CCITT
+- All in a single pass, zero-copy where possible
+- CRC computed with bitwise CCITT algorithm (no table needed for small frames)
+
+**Performance**: `qa_hdlc` test suite: **0.057s** (C++) vs **52s+** (Python) — **×900 speedup**.
+
+---
+
+## Session 7: TX Filter — `--baudrate` + `--modulation` (2026-02-21)
+
+### S7-1. Transmitter Chain Filter [HIGH — CPU OPTIMIZATION]
+
+**Files**: `apps/gr_satellites` (CLI args), `python/core/gr_satellites_flowgraph.py` (filter logic + `_MODULATION_FAMILY`)
+
+**Problem**: gr-satellites creates a full demod+deframe chain for **every** transmitter
+defined in the satellite's YAML file, regardless of the observation's actual baudrate
+and modulation. On multi-TX satellites, this wastes CPU:
+- **ConnectaIoT-8**: 4800 baud UHF + 4 Mbaud S-band → 2 chains for a UHF observation
+- **KUZBASS-300**: 5 different baudrates (1k2, 2k4, 4k8, 9k6, 19k2) → 5 chains
+- **INSPIRE-SAT 7**: 9600 BPSK + 9600 FSK + 2400 FSK → 3 chains, same baudrate but different modulation
+
+**Solution**: Two new CLI arguments:
+```
+--baudrate FLOAT   Filter transmitters by baudrate (dest='filter_baudrate')
+--modulation STR   Filter transmitters by modulation family (dest='filter_modulation')
+```
+
+**Modulation family mapping** (`_MODULATION_FAMILY` class dict):
+
+| gr-satellites YAML value | Family |
+|:---|:---|
+| `FSK`, `FSK subaudio` | `FSK` |
+| `GFSK`, `GMSK`, `MSK` | `FSK` |
+| `BPSK`, `BPSK Manchester` | `BPSK` |
+| `DBPSK`, `DBPSK Manchester` | `BPSK` |
+| `AFSK` | `AFSK` |
+
+GFSK/GMSK/MSK are included as defense-in-depth — normally `grsat.py` already maps
+SatNOGS modes to families, but the flowgraph also handles them if `gr_satellites` is
+called directly with `--modulation GMSK`.
+
+**Filter logic**: AND of baudrate + modulation when both specified. Safe fallback:
+if no transmitter matches, all are kept (with a warning on stderr).
+
+**Test results**:
+```
+KUZBASS-300 (53375): 5 TX → 1 — keeping ['4k8 FSK downlink']
+INSPIRE-SAT 7 (56211): 3 TX → 1 — keeping ['9k6 BPSK downlink']
+No-match fallback: keeping all 3 transmitters
+```
+
+### S7-2. SatNOGS Mode Mapping in grsat.py [HIGH — COMPANION]
+
+**Files**: `satnogsclient/radio/grsat.py`, `satnogsclient/observer/observer.py`
+(in `satnogs-client-librespace` repo)
+
+**`_SATNOGS_TO_GRSAT_MODULATION`** mapping dict (15 SatNOGS modes → 3 families):
+
+| SatNOGS mode | → gr-satellites family |
+|:---|:---|
+| `AFSK` | `AFSK` |
+| `BPSK`, `BPSK PMT-A3` | `BPSK` |
+| `FSK`, `FSK AX.25 G3RUH`, `FSK AX.100 Mode 5/6` | `FSK` |
+| `GFSK`, `GFSK Rktr`, `GFSK/BPSK` | `FSK` |
+| `GMSK`, `GMSK USP` | `FSK` |
+| `MSK`, `MSK AX.100 Mode 5/6` | `FSK` |
+
+**Prefix fallback**: For compound modes not in the dict (e.g. future `FSK SomeNew`),
+tries progressively shorter prefixes: `FSK SomeNew` → `FSK` → match.
+
+**observer.py**: Now passes `mode=self.mode` to the `GrSat()` constructor.
+
+**Logging**:
+```
+▶️ Starting gr_satellites
+  🛰️#12345 | 🔭53375 KUZBASS-300 | 📊48000 sps | mode=GMSK | baud=4800.0
+  🔍 TX filter: baudrate=4800.0 modulation=GMSK → gr-sat family=FSK
+```

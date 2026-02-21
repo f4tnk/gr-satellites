@@ -13,6 +13,7 @@ import functools
 import itertools
 import os
 import shlex
+import sys
 import yaml
 
 from gnuradio import gr, zeromq
@@ -158,7 +159,44 @@ class gr_satellites_flowgraph(gr.hier_block2):
             self._demodulators = dict()
             self._deframers = dict()
             self._taggers = dict()
-            for key, transmitter in satyaml['transmitters'].items():
+
+            # Filter transmitters by baudrate/modulation when requested
+            # Saves CPU on multi-TX satellites (e.g. ConnectaIoT-8:
+            # 4800 baud UHF + 4 Mbaud S-band, INSPIRE-SAT 7: BPSK + FSK)
+            transmitters = satyaml['transmitters']
+            filter_baud = getattr(self.options, 'filter_baudrate', None)
+            filter_mod = getattr(self.options, 'filter_modulation', None)
+            if (filter_baud is not None or filter_mod is not None) \
+                    and not pdu_in:
+                matched = {}
+                for k, v in transmitters.items():
+                    baud_ok = (filter_baud is None
+                               or v.get('baudrate') == filter_baud)
+                    mod_ok = (filter_mod is None
+                              or self._modulation_family(
+                                  v.get('modulation', ''))
+                              == self._modulation_family(filter_mod))
+                    if baud_ok and mod_ok:
+                        matched[k] = v
+                if matched:
+                    if len(matched) < len(transmitters):
+                        skipped = set(transmitters) - set(matched)
+                        print(f'gr_satellites: TX filter '
+                              f'baudrate={filter_baud} '
+                              f'modulation={filter_mod}: '
+                              f'keeping {list(matched.keys())}, '
+                              f'skipping {list(skipped)}',
+                              file=sys.stderr)
+                    transmitters = matched
+                else:
+                    print(f'gr_satellites: TX filter '
+                          f'baudrate={filter_baud} '
+                          f'modulation={filter_mod} '
+                          f'matched nothing, using all '
+                          f'{len(transmitters)}',
+                          file=sys.stderr)
+
+            for key, transmitter in transmitters.items():
                 self._init_demodulator_deframer(key, transmitter)
 
     def _init_datasink(self, key, info):
@@ -387,6 +425,27 @@ class gr_satellites_flowgraph(gr.hier_block2):
                             demod_options)
             try_add_options(cls._deframer_hooks[transmitter['framing']],
                             deframe_options)
+
+    @staticmethod
+    def _modulation_family(mod):
+        """Return the modulation family for a given modulation string.
+
+        Uses generic substring matching so any future modulation value
+        is handled automatically:
+            *AFSK* → AFSK, *FSK*|*MSK* → FSK, *BPSK* → BPSK.
+        Order matters: AFSK is checked before FSK to avoid false positive.
+        Falls back to the original string if no family matches.
+        """
+        if not mod:
+            return mod
+        upper = mod.upper()
+        if 'AFSK' in upper:
+            return 'AFSK'
+        if 'FSK' in upper or 'MSK' in upper:
+            return 'FSK'
+        if 'BPSK' in upper:
+            return 'BPSK'
+        return mod
 
     # Default parameters
     _demodulator_hooks = {
