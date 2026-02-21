@@ -606,3 +606,54 @@ Cela crée `~/.volk/volk_config` avec les meilleurs kernels SIMD détectés pour
 The `grpdu.py` wrapper already existed in the codebase (used correctly by 8 other deframers) and routes to the right module based on `gr.api_version()`.
 
 **Fix**: Replaced `blocks.pdu_to_tagged_stream(byte_t, ...)` with `pdu_to_tagged_stream(byte_t, ...)` imported from `...grpdu` in all 4 files. No functional change — only the import path changes.
+
+---
+
+## Session 5: UDP Drop Root Cause & Signal Handler Fix (2026-02-21)
+
+### S5-1. Root Cause: `source_zeros=False` in Deployed Container [CRITICAL — RESOLVED]
+
+**File**: `apps/gr_satellites` (line ~286)
+
+**Root cause analysis**:
+Despite Session 3's UDP source_zeros fix being committed (b2f461af), the Docker image was **never rebuilt**. The running container still had the old code:
+```python
+network.udp_source(size, 1, port, 0, 1472, False, False, ...)  # OLD — deployed
+network.udp_source(size, 1, port, 0, 1472, True, True, ...)    # NEW — in repo
+```
+
+With `source_zeros=False` + the Session 2 drain loop (50ms BLKD_IN backoff):
+- 9600 baud → `samp_rate=57600`, `pps=313 UDP packets/sec`
+- Effective throughput: `1472 / 0.050 * (1/8) = 57,725 sps` → **0.2% headroom**
+- Any CPU jitter → drops. Obs 1: 143,657 drops. Obs 3: 125,187 drops.
+- Obs 2 (0 drops) was lucky low-jitter timing.
+
+With `source_zeros=True`, the UDP source generates zeros when no data arrives, keeping the GR scheduler running smoothly. No more scheduler stalls, no more drops.
+
+**Fix**: Container hotpatched with `sed -i 's/False, False/True, True/'`. Repo already correct since Session 3.
+
+**Lesson**: Always rebuild the Docker image after committing fixes.
+
+### S5-2. Signal Handler Timeout to Prevent Force-Kill [HIGH]
+
+**File**: `apps/gr_satellites` (signal handler in `main()`)
+
+**Issue**: Every observation logged `"Process did not exit in time, forcing kill"`. The original signal handler:
+```python
+def sig_handler(sig=None, frame=None):
+    tb.stop()
+    tb.wait()       # ← blocks forever with source_zeros=True
+    sys.exit(0)
+```
+With `source_zeros=True`, the UDP source continuously outputs zeros, keeping downstream blocks busy. `tb.wait()` never returns because the scheduler never reaches an idle state. `satnogs-client` sends SIGTERM, waits 10s, then SIGKILL.
+
+**Fix**: Threaded timeout with `os._exit()`:
+```python
+def sig_handler(sig=None, frame=None):
+    tb.stop()
+    waiter = threading.Thread(target=tb.wait, daemon=True)
+    waiter.start()
+    waiter.join(timeout=5.0)  # 5s < 10s SIGKILL deadline
+    os._exit(0)               # hard exit bypasses stuck threads
+```
+Process now exits cleanly within 5 seconds of SIGTERM, well before the 10s force-kill deadline. Uses `os._exit()` instead of `sys.exit()` because `sys.exit()` only raises `SystemExit` which can be caught/blocked by running threads.
