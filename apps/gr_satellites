@@ -14,6 +14,7 @@ import os
 import signal
 import sys
 import threading
+import time
 
 from gnuradio import gr, blocks, audio
 
@@ -403,15 +404,21 @@ def main():
 
     tb = gr_satellites_top_block(parser)
 
-    # F4TNK: Robust signal handler with timeout.
-    # The original handler called tb.stop() + tb.wait() which can block
-    # indefinitely if a GR block's work() is stuck (e.g., udp_source with
-    # source_zeros=True continuously outputs, keeping downstream busy).
-    # satnogs-client sends SIGTERM, waits 10s, then SIGKILL. We add a 5s
-    # timeout on tb.wait() so the process exits cleanly before the force-kill.
+    # F4TNK: Signal handler + main loop fix for clean shutdown.
+    #
+    # Problem: The original code called tb.wait() at the end of main(), which
+    # is a C++ blocking call (pybind11, GIL released). Python signal handlers
+    # (set via signal.signal()) only execute in the main thread between Python
+    # bytecodes. When the main thread is blocked in C++ tb.wait(), SIGTERM is
+    # delivered to the process but the Python handler never fires — the process
+    # hangs until satnogs-client force-kills it with SIGKILL after 10s.
+    #
+    # Fix: Replace tb.wait() with a Python time.sleep() polling loop. The main
+    # thread stays in Python code (interruptible by signals). When SIGTERM
+    # arrives, sig_handler fires immediately, calls tb.stop(), and os._exit(0).
+
     def sig_handler(sig=None, frame=None):
         tb.stop()
-        # Use a thread with timeout to avoid blocking forever on tb.wait()
         waiter = threading.Thread(target=tb.wait, daemon=True)
         waiter.start()
         waiter.join(timeout=5.0)
@@ -421,6 +428,14 @@ def main():
     signal.signal(signal.SIGTERM, sig_handler)
 
     tb.start()
+    # Main loop: sleep in Python so signals can be delivered.
+    # tb.wait() would block in C++ and prevent signal handler execution.
+    try:
+        while True:
+            time.sleep(0.5)
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    tb.stop()
     tb.wait()
 
 
