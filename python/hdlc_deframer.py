@@ -30,7 +30,9 @@ class hdlc_crc_check:
     def fcs_ok(self, frame):
         if len(frame) <= 2:
             return False
-        out = self.crc_calc.compute(frame[:-2])
+        # convert bytes→list[int] for pybind11 crc.compute() which does
+        # NOT accept bytes on Python 3.13 (TypeError crash, F4TNK Session 5)
+        out = self.crc_calc.compute(list(frame[:-2]))
         return frame[-2] == (out & 0xff) and frame[-1] == ((out >> 8) & 0xff)
 
 
