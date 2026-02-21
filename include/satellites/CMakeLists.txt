@@ -37,6 +37,7 @@ install(FILES
     encode_rs.h
     fixedlen_to_pdu.h
     frame_counter.h
+    hdlc_deframer.h
     kurtosis.h
     level_to_message.h
     lilacsat1_demux.h

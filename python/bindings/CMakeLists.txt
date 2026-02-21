@@ -43,6 +43,7 @@ list(APPEND satellites_python_files
     encode_rs_python.cc
     fixedlen_to_pdu_python.cc
     frame_counter_python.cc
+    hdlc_deframer_python.cc
     kurtosis_python.cc
     level_to_message_python.cc
     lilacsat1_demux_python.cc
@@ -78,7 +79,7 @@ GR_PYBIND_MAKE_OOT(satellites
 
 # F4TNK: copy pydoc templates from docstrings/ to the binary dir so the new
 # bindings can find their *_pydoc.h headers at compile time.
-foreach(_f rms_agc_cc rms_agc_ff)
+foreach(_f hdlc_deframer rms_agc_cc rms_agc_ff)
     if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/${_f}_pydoc.h")
         configure_file(
             "${CMAKE_CURRENT_SOURCE_DIR}/docstrings/${_f}_pydoc_template.h"

@@ -16,6 +16,15 @@ import pmt
 
 from . import crc, hdlc
 
+# Import C++ native implementation (F4TNK — 10-100× faster than Python)
+try:
+    from .bindings.satellites_python import hdlc_deframer as _hdlc_deframer_cpp
+except (ImportError, ModuleNotFoundError):
+    try:
+        from .satellites_python import hdlc_deframer as _hdlc_deframer_cpp
+    except (ImportError, ModuleNotFoundError):
+        _hdlc_deframer_cpp = None
+
 
 def pack(s):
     # LSB-first packing: bit[0] is LSB of byte[0], bit[7] is MSB of byte[0]
@@ -36,8 +45,8 @@ class hdlc_crc_check:
         return frame[-2] == (out & 0xff) and frame[-1] == ((out >> 8) & 0xff)
 
 
-class hdlc_deframer(gr.sync_block):
-    """docstring for block hdlc_deframer"""
+class _hdlc_deframer_python(gr.sync_block):
+    """Pure-Python fallback for hdlc_deframer (used when crc_check_func is provided)."""
     def __init__(self, check_fcs, max_length, crc_check_func=None):
         gr.sync_block.__init__(
             self,
@@ -90,3 +99,15 @@ class hdlc_deframer(gr.sync_block):
                 self.ones = 0
 
         return len(input_items[0])
+
+
+def hdlc_deframer(check_fcs, max_length, crc_check_func=None):
+    """Factory: returns C++ fast path (built-in CRC) or Python fallback (custom CRC).
+
+    The C++ implementation is 10-100× faster for the hot bit-by-bit loop.
+    The Python fallback is used when a custom crc_check_func is provided
+    (e.g. ax5043_deframer with CRC-16-USB).
+    """
+    if crc_check_func is None and _hdlc_deframer_cpp is not None:
+        return _hdlc_deframer_cpp(check_fcs, max_length)
+    return _hdlc_deframer_python(check_fcs, max_length, crc_check_func)
