@@ -11,6 +11,8 @@
 from gnuradio import gr, blocks
 
 from ... import kiss_to_pdu, pdu_head_tail
+# F4TNK: Use grpdu wrapper for GNU Radio 3.10+/3.11 PDU compatibility
+from ...grpdu import pdu_to_tagged_stream
 from ...grtypes import byte_t
 
 
@@ -38,7 +40,7 @@ class kiss_transport(gr.hier_block2):
 
         if header_remove_bytes:
             self.header = pdu_head_tail(3, header_remove_bytes)
-        self.pdu2tag = blocks.pdu_to_tagged_stream(byte_t, 'packet_len')
+        self.pdu2tag = pdu_to_tagged_stream(byte_t, 'packet_len')
         self.kiss = kiss_to_pdu(control_byte)
 
         if header_remove_bytes:

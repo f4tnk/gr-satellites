@@ -13,6 +13,8 @@ import numpy as np
 import pmt
 
 from ... import crc, viterbi_decoder
+# F4TNK: Use grpdu wrapper for GNU Radio 3.10+/3.11 PDU compatibility
+from ...grpdu import pdu_to_tagged_stream
 from ...grtypes import byte_t
 from ...hdlc_deframer import hdlc_deframer
 from ...hier.sync_to_pdu import sync_to_pdu
@@ -96,7 +98,7 @@ class ax5043_deframer(gr.hier_block2, options_block):
             packlen=4000, sync=_syncword, threshold=4)
         self.deinterleave = deinterleave()
         self.viterbi = viterbi_decoder(5, [25, 23])
-        self.pdu2tag = blocks.pdu_to_tagged_stream(byte_t, 'packet_len')
+        self.pdu2tag = pdu_to_tagged_stream(byte_t, 'packet_len')
         self.crc_check = crc16_usb()
         self.hdlc = hdlc_deframer(True, 10000,
                                   crc_check_func=self.crc_check.check)

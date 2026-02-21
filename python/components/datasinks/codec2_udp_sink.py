@@ -14,6 +14,8 @@ from gnuradio import gr, blocks
 if gr.api_version() != '9':
     from gnuradio import network
 
+# F4TNK: Use grpdu wrapper for GNU Radio 3.10+/3.11 PDU compatibility
+from ...grpdu import pdu_to_tagged_stream
 from ...utils.options_block import options_block
 from ...grtypes import byte_t
 
@@ -45,7 +47,7 @@ class codec2_udp_sink(gr.hier_block2, options_block):
         if port is None:
             port = self.options.codec2_port
 
-        self.pdu2tag = blocks.pdu_to_tagged_stream(byte_t, 'packet_len')
+        self.pdu2tag = pdu_to_tagged_stream(byte_t, 'packet_len')
         payload_bytes = 7
         # The UDP sink has been moved in GNU Radio 3.10
         if gr.api_version() == '9':

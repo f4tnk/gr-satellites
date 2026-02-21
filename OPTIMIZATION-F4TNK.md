@@ -588,3 +588,21 @@ Cela crée `~/.volk/volk_config` avec les meilleurs kernels SIMD détectés pour
 **Fix**: Changed `notify_missed` from `False` to `True`. No effect with HEADERTYPE_NONE (current), but enables packet loss warnings if sequence numbering is added later.
 
 **Combined with GnuRadio drain-loop fix (commit 72ae60805), eliminates the 93-95% packet loss.**
+
+---
+
+## Session 4: PDU API Compatibility Fix (2026-02-20)
+
+### S-PDU1. Migrate `blocks.pdu_to_tagged_stream` to `grpdu` Wrapper [HIGH]
+
+**Files**: 
+- `python/components/datasinks/codec2_udp_sink.py`
+- `python/components/datasinks/kiss_file_sink.py`
+- `python/components/deframers/ax5043_deframer.py`
+- `python/components/transports/kiss_transport.py`
+
+**Issue**: 4 production files used `blocks.pdu_to_tagged_stream()` directly from `gnuradio.blocks`. In GNU Radio 3.10+ (API >= 10), `pdu_to_tagged_stream` was moved to `gnuradio.pdu`. A backward-compatibility shim still exists in GR 3.11 but is **deprecated and scheduled for removal**. When the shim is removed, these files will crash with `AttributeError` at runtime — KISS file output, Codec2 UDP output, AX5043 deframing, and KISS transport will all silently fail.
+
+The `grpdu.py` wrapper already existed in the codebase (used correctly by 8 other deframers) and routes to the right module based on `gr.api_version()`.
+
+**Fix**: Replaced `blocks.pdu_to_tagged_stream(byte_t, ...)` with `pdu_to_tagged_stream(byte_t, ...)` imported from `...grpdu` in all 4 files. No functional change — only the import path changes.
