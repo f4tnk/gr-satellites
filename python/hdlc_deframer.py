@@ -53,8 +53,31 @@ class hdlc_deframer(gr.sync_block):
             self.fcs_ok = self.crc_check.fcs_ok
 
         self.message_port_register_out(pmt.intern('out'))
+        self._work_count = 0
 
     def work(self, input_items, output_items):
+        """Exception-safe wrapper: catches any crash in work() to prevent
+        the GR scheduler thread from dying, which would cascade-stall the
+        entire flowgraph and cause 100% UDP drops (F4TNK Session 5)."""
+        self._work_count += 1
+        try:
+            return self._work_inner(input_items, output_items)
+        except BaseException as exc:
+            import traceback
+            import time as _t
+            with open('/tmp/hdlc_crash.log', 'a') as _f:
+                _f.write(_t.strftime('%H:%M:%S') + ' HDLC CRASH #'
+                         + str(self._work_count) + ' type='
+                         + type(exc).__name__ + ' msg='
+                         + str(exc)[:200] + '\n')
+                _f.write('  input_len=' + str(len(input_items[0]))
+                         + ' ones=' + str(self.ones)
+                         + ' bits_len=' + str(len(self.bits)) + '\n')
+                traceback.print_exc(file=_f)
+                _f.flush()
+            return len(input_items[0])  # Keep block alive
+
+    def _work_inner(self, input_items, output_items):
         in0 = input_items[0]
 
         for x in in0:
