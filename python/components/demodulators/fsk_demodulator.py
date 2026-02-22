@@ -84,9 +84,8 @@ class fsk_demodulator(gr.hier_block2, options_block):
             else:
                 # Sample rate is wider than Carson's bandwidth.
                 # Lowpass filter before demod.
-                # F4TNK: transition_width 0.1→0.5 (321→~64 taps, 5× less CPU)
                 fir_taps = firdes.low_pass(
-                    1, samp_rate, carson_cutoff, 0.5 * carson_cutoff)
+                    1, samp_rate, carson_cutoff, 0.1 * carson_cutoff)
                 self.demod_filter = filter.fir_filter_ccf(1, fir_taps)
                 self.connect(self, self.demod_filter, self.demod)
         else:
