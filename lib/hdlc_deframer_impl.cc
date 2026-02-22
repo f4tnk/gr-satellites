@@ -99,6 +99,25 @@ void hdlc_deframer_impl::process_frame()
     // Need at least 3 bytes (1 payload + 2 FCS) to be useful.
     if (d_byte_count > 2) {
         bool send = !d_check_fcs || fcs_ok(d_pktbuf.data(), d_byte_count);
+
+        // Bit-flip CRC retry: if FCS fails, try flipping each bit in the
+        // frame (payload + FCS) one at a time. For a typical 300-byte AX.25
+        // frame, this is ~2400 CRC-16 checks — takes <100 µs in C++.
+        // Recovers all frames with exactly 1 bit-error.
+        if (!send && d_check_fcs && d_byte_count <= d_max_bytes) {
+            const size_t nbytes = d_byte_count;
+            for (size_t byte_idx = 0; byte_idx < nbytes && !send; byte_idx++) {
+                for (int bit_idx = 0; bit_idx < 8 && !send; bit_idx++) {
+                    d_pktbuf[byte_idx] ^= (1 << bit_idx);   // flip
+                    if (fcs_ok(d_pktbuf.data(), nbytes)) {
+                        send = true; // corrected frame — keep the fix
+                    } else {
+                        d_pktbuf[byte_idx] ^= (1 << bit_idx); // restore
+                    }
+                }
+            }
+        }
+
         if (send) {
             size_t payload_len = d_byte_count - 2; // trim FCS
             pmt::pmt_t pdu = pmt::cons(
