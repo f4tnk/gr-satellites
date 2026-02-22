@@ -419,15 +419,27 @@ def main():
     # delivered to the process but the Python handler never fires — the process
     # hangs until satnogs-client force-kills it with SIGKILL after 10s.
     #
-    # Fix: Replace tb.wait() with a Python time.sleep() polling loop. The main
-    # thread stays in Python code (interruptible by signals). When SIGTERM
-    # arrives, sig_handler fires immediately, calls tb.stop(), and os._exit(0).
+    # Fix: Run tb.stop()+tb.wait() in a daemon thread with a hard 7s budget.
+    # The signal handler ALWAYS reaches os._exit() within 7s, well under the
+    # satnogs-client 10s SIGKILL deadline. This prevents the force-kill that
+    # could truncate KISS file data.
 
     def sig_handler(sig=None, frame=None):
-        tb.stop()
-        waiter = threading.Thread(target=tb.wait, daemon=True)
-        waiter.start()
-        waiter.join(timeout=5.0)
+        def _shutdown():
+            try:
+                tb.stop()
+                tb.wait()
+            except Exception:
+                pass
+        t = threading.Thread(target=_shutdown, daemon=True)
+        t.start()
+        t.join(timeout=7.0)  # Hard budget: 7s (client gives 10s before SIGKILL)
+        # Flush Python I/O before hard exit (os._exit skips atexit + stdio flush)
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
         os._exit(0)
 
     signal.signal(signal.SIGINT, sig_handler)
