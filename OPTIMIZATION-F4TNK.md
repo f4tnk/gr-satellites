@@ -18,6 +18,7 @@ Station: SatNOGS #3762 — AirSpy R2 @ 2.5 MSPS, x86-64 (AVX2 + BMI2)
 | `b5ac6076` | TX filter `--baudrate` + `--modulation` — `_MODULATION_FAMILY`, GFSK/GMSK/MSK→FSK |
 | `171c060e` | **fix(udp)**: revert `source_zeros` to `False` — root cause of 300-400% CPU regression |
 | `438a7bdb` | **feat(hdlc)**: 1-bit-flip CRC retry — récupère les frames AX.25 avec 1 bit d'erreur |
+| `31db6ee2` | **fix(afsk)**: af_carrier/deviation optional with Bell 202 defaults — fixes crash on incomplete satyaml |
 
 ---
 
@@ -912,3 +913,40 @@ Additionally, the CRC computation itself was upgraded from bit-by-bit to a
 - CRC computation: **×8 faster** per byte (table vs bit-by-bit)
 - Error correction: **O(n) vs O(n×8)** — single pass instead of 2400 iterations
 - Total correction time: **~5 µs** vs ~50-100 µs (×10-20 improvement)
+
+---
+
+## Session 11 — Mod 20: AFSK af_carrier/deviation optional defaults
+
+### S11-1. AFSK demodulator graceful defaults [HIGH — RELIABILITY]
+
+**Files**: `python/components/demodulators/afsk_demodulator.py`, `python/satyaml/satyaml.py`
+
+**Commit**: `31db6ee2`
+
+**Problem**: The AFSK demodulator required `af_carrier` and `deviation` as mandatory
+positional arguments. When a satellite's satyaml was missing these fields (e.g. CUTE-1
+NORAD 27844 — obs #13455564), gr-satellites crashed immediately with:
+```
+TypeError: afsk_demodulator.__init__() missing 1 required positional argument: 'af_carrier'
+```
+This made all AFSK observations fail for satellites with incomplete satyaml entries.
+
+**Solution** (2 changes):
+
+1. **`afsk_demodulator.py`**: Made `af_carrier` and `deviation` keyword arguments with
+   Bell 202 standard defaults:
+   - `af_carrier=1700` Hz — center of Mark (1200 Hz) and Space (2200 Hz)
+   - `deviation=500` Hz — half-distance between Mark and Space
+   - Added `logging.info()` when defaults are used, for diagnostics
+
+2. **`satyaml.py`**: Changed the AFSK validator from `raise YAMLError(...)` to
+   `logging.warning(...)` when `af_carrier` or `deviation` are missing. The demodulator
+   will use its Bell 202 defaults gracefully.
+
+**Companion change** (`satnogs-client-librespace` commit `61ddb38`): Removed the
+`_gen_fallback_satyaml()` function and retry loop from `grsat.py` — no longer needed
+since the demodulator handles missing fields natively.
+
+**Impact**: All AFSK satellites with incomplete satyaml now decode correctly using
+Bell 202 standard parameters instead of crashing.
