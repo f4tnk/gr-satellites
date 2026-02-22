@@ -8,11 +8,22 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 
+import logging
+
 from gnuradio import gr, filter, analog
 from gnuradio.filter import firdes
 
 from .fsk_demodulator import fsk_demodulator
 from ...utils.options_block import options_block
+
+_logger = logging.getLogger(__name__)
+
+# ── Bell 202 AFSK standard defaults (1200 baud) ──────────────────────
+# Mark = 1200 Hz, Space = 2200 Hz
+# af_carrier = (1200 + 2200) / 2 = 1700 Hz
+# deviation  = (2200 - 1200) / 2 =  500 Hz
+_DEFAULT_AF_CARRIER = 1700
+_DEFAULT_DEVIATION = 500
 
 
 class afsk_demodulator(gr.hier_block2, options_block):
@@ -28,13 +39,15 @@ class afsk_demodulator(gr.hier_block2, options_block):
         baudrate: Baudrate in symbols per second (float)
         sample_rate: Sample rate in samples per second (float)
         iq: Whether the input is IQ or real (bool)
-        af_carrier: Audio frequency carrier in Hz (float)
-        deviation: Deviation in Hz, negative inverts the sidebands (float)
+        af_carrier: Audio frequency carrier in Hz (float, default 1700)
+        deviation: Deviation in Hz, negative inverts the sidebands (float, default 500)
         dump_path: Path to dump internal signals to files (str)
         options: Options from argparse
     """
-    def __init__(self, baudrate, samp_rate, iq, af_carrier,
-                 deviation, dump_path=None, options=None,
+    def __init__(self, baudrate, samp_rate, iq,
+                 af_carrier=_DEFAULT_AF_CARRIER,
+                 deviation=_DEFAULT_DEVIATION,
+                 dump_path=None, options=None,
                  fm_deviation=None):
         gr.hier_block2.__init__(
             self,
@@ -43,6 +56,14 @@ class afsk_demodulator(gr.hier_block2, options_block):
                             gr.sizeof_gr_complex if iq else gr.sizeof_float),
             gr.io_signature(1, 1, gr.sizeof_float))
         options_block.__init__(self, options)
+
+        # Log when using default values (helps diagnose satyaml missing fields)
+        if af_carrier == _DEFAULT_AF_CARRIER:
+            _logger.info('afsk_demodulator: using default af_carrier=%d Hz '
+                         '(Bell 202 standard)', af_carrier)
+        if deviation == _DEFAULT_DEVIATION:
+            _logger.info('afsk_demodulator: using default deviation=%d Hz '
+                         '(Bell 202 standard)', deviation)
 
         # The FM deviation is used to apply Carson's rule in a low-pass filter
         # in the IQ case. In the FM demodulated case it is ignored.

@@ -114,11 +114,17 @@ class SatYAML:
                     f'{key} in {yml}')
             if transmitter['modulation'] == 'AFSK':
                 if 'af_carrier' not in transmitter:
-                    raise YAMLError(
-                        f'Missing af_carrier field for AFSK in {key} in {yml}')
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        'Missing af_carrier for AFSK in %s in %s '
+                        '— demodulator will use Bell 202 default (1700 Hz)',
+                        key, yml)
                 if 'deviation' not in transmitter:
-                    raise YAMLError(
-                        f'Missing deviation field for AFSK in {key} in {yml}')
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        'Missing deviation for AFSK in %s in %s '
+                        '— demodulator will use Bell 202 default (500 Hz)',
+                        key, yml)
             if ('af_carrier' in transmitter
                     and type(transmitter['af_carrier']) not in [float, int]):
                 raise YAMLError(
