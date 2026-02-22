@@ -294,16 +294,11 @@ class gr_satellites_top_block(gr.top_block):
             self.setup_input_int16()
 
     def udp_source(self, size):
-        # F4TNK: Enable source_zeros=True to prevent GR scheduler BLKD_IN
-        # backoff (50ms timeout) when work() returns 0. Without this, the TPB
-        # scheduler (tpb_thread_body.cc L111) forces source blocks into
-        # BLKD_IN state on empty return, calling work() only ~20 times/sec
-        # while 313+ packets/sec arrive (57600 sps). source_zeros=True keeps
-        # the scheduler in READY state, ensuring immediate re-invocation.
-        # Enable notify_missed=True for drop diagnostics (no effect with
-        # header_type=0/HEADERTYPE_NONE, but safe for future header use).
+        # F4TNK: source_zeros reverted to False — setting it to True caused
+        # the entire DSP chain to spin on millions of zero-samples/sec when
+        # no UDP data arrives, resulting in 300-400% CPU instead of 50-60%.
         return network.udp_source(
-            size, 1, self.options.udp_port, 0, 1472, True, True,
+            size, 1, self.options.udp_port, 0, 1472, False, False,
             not self.options.udp_ipv4_only)
 
     def setup_input_int16(self):
