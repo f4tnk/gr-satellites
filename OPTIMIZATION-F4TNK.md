@@ -882,3 +882,33 @@ on marginal passes.
   (CRC-16 collision). Acceptable for telemetry where duplicate/invalid frames
   are filtered downstream.
 - The corrected bit position is not logged (could be added for diagnostics)
+
+---
+
+## Session 10: Syndrome-based error correction + table CRC in hdlc_deframer (2026-02-22)
+
+### S10-1. O(n) syndrome-based 1-bit error correction [HIGH — PERFORMANCE + DECODE]
+
+**File**: `lib/hdlc_deframer_impl.cc`
+
+**Commit**: `c579ad64`
+
+**Problem**: The Session 9 bit-flip CRC retry was O(n×8) — it iterated over every bit
+in the frame, recomputing the full CRC each time. For a 300-byte frame, this is 2400
+full CRC computations. While fast enough in practice (~50-100 µs), it can be reduced
+to O(n) using the same syndrome-based reverse-LFSR approach used in gr-satnogs.
+
+**Solution**: Replace the brute-force bit-flip loop with an O(n) syndrome-based
+algorithm:
+1. Compute CRC of the frame → get actual residual
+2. Compare with expected residual (0xF0B8 for CRC-16/X.25)
+3. Walk backward through serial bit positions using reverse LFSR steps
+4. When syndrome matches target, flip that single bit
+
+Additionally, the CRC computation itself was upgraded from bit-by-bit to a
+256-entry lookup table (`crc_table[256]`) for O(1) per byte.
+
+**Performance**:
+- CRC computation: **×8 faster** per byte (table vs bit-by-bit)
+- Error correction: **O(n) vs O(n×8)** — single pass instead of 2400 iterations
+- Total correction time: **~5 µs** vs ~50-100 µs (×10-20 improvement)
