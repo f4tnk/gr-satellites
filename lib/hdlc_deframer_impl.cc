@@ -136,11 +136,11 @@ void hdlc_deframer_impl::process_frame()
          * Replaces the previous O(n×8) brute-force (full CRC per bit-flip).
          * Algorithm:
          *   1. Compute CRC over entire frame (payload + FCS).
-         *   2. For a correct frame, CRC residual = 0xF0B8.
-         *      Syndrome = crc_result ^ 0xF0B8.  If 0, frame is already valid.
+         *   2. For a correct frame, CRC residual = 0x0F47 (post xorout=0xFFFF).
+         *      Syndrome = crc_result ^ 0x0F47.  If 0, frame is already valid.
          *   3. Backward scan: the syndrome of the last bit (byte n-1, bit 7)
-         *      is 0x8408 (reflected poly). For each earlier bit, apply the
-         *      reverse LFSR step.  If syndrome matches target, flip that bit.
+         *      is 0x8408 (reflected poly). For each earlier bit, apply a
+         *      forward LFSR step.  If syndrome matches target, flip that bit.
          *   4. Verify with fcs_ok() to guard against syndrome collision
          *      (probability ~1/65536).
          */
@@ -154,7 +154,8 @@ void hdlc_deframer_impl::process_frame()
             }
             c ^= 0xFFFF;
 
-            const uint16_t target = c ^ 0xF0B8;
+            // CRC with xorout applied yields 0x0F47 for a valid frame
+            const uint16_t target = c ^ 0x0F47;
             if (target == 0) {
                 // Already valid (shouldn't happen since fcs_ok failed above,
                 // but guard anyway)
@@ -172,11 +173,10 @@ void hdlc_deframer_impl::process_frame()
                                 d_pktbuf[i] ^= (uint8_t)(1u << b);
                             }
                         }
-                        // Reverse LFSR step for reflected poly 0x8408
-                        const int prev_lsb = (s >> 15) & 1;
-                        s = prev_lsb
-                            ? (uint16_t)((((s ^ 0x8408) << 1) & 0xFFFFu) | 1u)
-                            : (uint16_t)((s << 1) & 0xFFFFu);
+                        // Forward LFSR step: syndrome for one-earlier bit position
+                        // (earlier bit → more remaining shifts → one more forward step)
+                        s = (s & 1) ? (uint16_t)(((s >> 1) ^ 0x8408u) & 0xFFFFu)
+                                    : (uint16_t)((s >> 1) & 0xFFFFu);
                     }
                 }
             }

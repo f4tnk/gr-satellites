@@ -448,9 +448,22 @@ def main():
     tb.start()
     # Main loop: sleep in Python so signals can be delivered.
     # tb.wait() would block in C++ and prevent signal handler execution.
+    # Use an Event so file-based inputs (--rawfile, --sigmf) exit naturally
+    # when the flowgraph finishes, instead of hanging forever.
+    done = threading.Event()
+
+    def _wait_fg():
+        try:
+            tb.wait()
+        except Exception:
+            pass
+        done.set()
+
+    threading.Thread(target=_wait_fg, daemon=True).start()
+
     try:
-        while True:
-            time.sleep(0.5)
+        while not done.wait(timeout=0.5):
+            pass
     except (KeyboardInterrupt, SystemExit):
         pass
     tb.stop()
