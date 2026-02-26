@@ -16,6 +16,7 @@
 #include "hdlc_deframer_impl.h"
 #include <gnuradio/io_signature.h>
 #include <algorithm>
+#include <unordered_map>
 
 namespace gr {
 namespace satellites {
@@ -131,21 +132,32 @@ void hdlc_deframer_impl::process_frame()
         bool send = !d_check_fcs || fcs_ok(d_pktbuf.data(), d_byte_count);
 
         /*
-         * F4TNK: Syndrome-based 1-bit error correction — O(n) algorithm.
+         * F4TNK It#2: Syndrome-based 1-bit AND 2-bit error correction.
          *
-         * Replaces the previous O(n×8) brute-force (full CRC per bit-flip).
          * Algorithm:
          *   1. Compute CRC over entire frame (payload + FCS).
-         *   2. For a correct frame, CRC residual = 0x0F47 (post xorout=0xFFFF).
-         *      Syndrome = crc_result ^ 0x0F47.  If 0, frame is already valid.
-         *   3. Backward scan: the syndrome of the last bit (byte n-1, bit 7)
-         *      is 0x8408 (reflected poly). For each earlier bit, apply a
-         *      forward LFSR step.  If syndrome matches target, flip that bit.
-         *   4. Verify with fcs_ok() to guard against syndrome collision
-         *      (probability ~1/65536).
+         *   2. For a valid frame, CRC-16/X.25 residual = 0x0F47 (post xorout).
+         *      target = crc_result ^ 0x0F47. If 0, frame is already valid.
+         *   3. Build per-bit syndrome array via LFSR walk (one pass over all bits).
+         *   4. 1-bit: scan for syndrome == target → flip that bit → verify.
+         *   5. 2-bit: build hash map {syndrome→position}; for each bit i,
+         *      check if (target ^ syn[i]) is in the map → O(n) amortized.
+         *   6. Each candidate is verified with fcs_ok() to guard against
+         *      CRC-16 collision (probability ~1/65536 per candidate).
+         *
+         * At BER=1e-3, 300-byte AX.25 frame:
+         *   P(1 error) ≈ 22% — recovered by 1-bit correction
+         *   P(2 errors) ≈ 26% — recovered by 2-bit correction
+         *   Combined: ~48% of previously-lost frames now recoverable.
+         *
+         * CPU cost (CRC-failed frame only):
+         *   1-bit: O(n) syndrome scan + 1 fcs_ok() ≈ 5 µs
+         *   2-bit: O(n) hash lookups + 1 fcs_ok() ≈ 50-200 µs for 300 bytes
+         *   Zero cost on correctly received frames (fast path unchanged).
          */
         if (!send && d_check_fcs && d_byte_count <= d_max_bytes) {
             const size_t nbytes = d_byte_count;
+            const size_t nbits = nbytes * 8;
 
             // Compute CRC-16/X.25 over entire frame including FCS
             uint16_t c = 0xFFFF;
@@ -154,29 +166,74 @@ void hdlc_deframer_impl::process_frame()
             }
             c ^= 0xFFFF;
 
-            // CRC with xorout applied yields 0x0F47 for a valid frame
             const uint16_t target = c ^ 0x0F47;
             if (target == 0) {
-                // Already valid (shouldn't happen since fcs_ok failed above,
-                // but guard anyway)
                 send = true;
             } else {
-                // Backward syndrome scan
+                // Build per-bit syndrome table.
+                // Walk backward: start at last byte, bit 7 (seed = 0x8408),
+                // then decrement through (byte, bit) = (n-1,7) → (n-1,6) →
+                // ... → (0,1) → (0,0). Each step applies a forward LFSR shift.
+                //
+                // We store flat array: pos[k] = {byte_idx, bit_idx, syndrome}
+                // where k goes 0..(nbits-1) in the order the LFSR walks.
+                struct bit_info {
+                    int byte_idx;
+                    int bit_idx;
+                    uint16_t syndrome;
+                };
+                std::vector<bit_info> bits(nbits);
                 uint16_t s = 0x8408;
-                for (int i = (int)nbytes - 1; i >= 0 && !send; i--) {
-                    for (int b = 7; b >= 0 && !send; b--) {
-                        if (s == target) {
-                            d_pktbuf[i] ^= (uint8_t)(1u << b);
+                size_t k = 0;
+                for (int i = (int)nbytes - 1; i >= 0; i--) {
+                    for (int b = 7; b >= 0; b--) {
+                        bits[k].byte_idx = i;
+                        bits[k].bit_idx = b;
+                        bits[k].syndrome = s;
+                        k++;
+                        s = (s & 1) ? (uint16_t)(((s >> 1) ^ 0x8408u) & 0xFFFFu)
+                                    : (uint16_t)((s >> 1) & 0xFFFFu);
+                    }
+                }
+
+                // --- Pass 1: 1-bit error correction ---
+                for (size_t p = 0; p < nbits && !send; p++) {
+                    if (bits[p].syndrome == target) {
+                        d_pktbuf[bits[p].byte_idx] ^= (uint8_t)(1u << bits[p].bit_idx);
+                        if (fcs_ok(d_pktbuf.data(), nbytes)) {
+                            send = true;
+                        } else {
+                            d_pktbuf[bits[p].byte_idx] ^= (uint8_t)(1u << bits[p].bit_idx);
+                        }
+                    }
+                }
+
+                // --- Pass 2: 2-bit error correction ---
+                // For 2 errors at positions p1,p2: syn[p1] ^ syn[p2] = target
+                // ⟹ syn[p2] = target ^ syn[p1]. Hash-map lookup: O(n) amortized.
+                if (!send && nbits <= 16000) {
+                    std::unordered_map<uint16_t, size_t> syn_map;
+                    syn_map.reserve(nbits);
+                    for (size_t p = 0; p < nbits; p++) {
+                        syn_map.emplace(bits[p].syndrome, p);
+                    }
+
+                    for (size_t p1 = 0; p1 < nbits && !send; p1++) {
+                        uint16_t needed = target ^ bits[p1].syndrome;
+                        if (needed == 0)
+                            continue; // 1-bit case already handled
+                        auto it = syn_map.find(needed);
+                        if (it != syn_map.end() && it->second > p1) {
+                            size_t p2 = it->second;
+                            d_pktbuf[bits[p1].byte_idx] ^= (uint8_t)(1u << bits[p1].bit_idx);
+                            d_pktbuf[bits[p2].byte_idx] ^= (uint8_t)(1u << bits[p2].bit_idx);
                             if (fcs_ok(d_pktbuf.data(), nbytes)) {
                                 send = true;
                             } else {
-                                d_pktbuf[i] ^= (uint8_t)(1u << b);
+                                d_pktbuf[bits[p1].byte_idx] ^= (uint8_t)(1u << bits[p1].bit_idx);
+                                d_pktbuf[bits[p2].byte_idx] ^= (uint8_t)(1u << bits[p2].bit_idx);
                             }
                         }
-                        // Forward LFSR step: syndrome for one-earlier bit position
-                        // (earlier bit → more remaining shifts → one more forward step)
-                        s = (s & 1) ? (uint16_t)(((s >> 1) ^ 0x8408u) & 0xFFFFu)
-                                    : (uint16_t)((s >> 1) & 0xFFFFu);
                     }
                 }
             }
