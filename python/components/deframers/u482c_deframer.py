@@ -51,7 +51,10 @@ class u482c_deframer(gr.hier_block2, options_block):
         self.msg_connect((self.deframer, 'out'), (self.fec, 'in'))
         self.msg_connect((self.fec, 'out'), (self, 'out'))
 
-    _default_sync_threshold = 4
+    # F4TNK It#1: increased from 4 to 5 — RS FEC in u482c_decode
+    # corrects payload errors; allowing 1 more syncword error recovers
+    # more frames on marginal passes.
+    _default_sync_threshold = 5
 
     @classmethod
     def add_options(cls, parser):

@@ -72,7 +72,9 @@ class ax100_deframer(gr.hier_block2, options_block):
         self.msg_connect((self.deframer, 'out'), (self.fec, 'in'))
         self.msg_connect((self.fec, 'out'), (self, 'out'))
 
-    _default_sync_threshold = 4
+    # F4TNK It#1: increased from 4 to 5 — both RS and ASM+u482c modes
+    # have RS FEC downstream that corrects errors in the payload.
+    _default_sync_threshold = 5
 
     @classmethod
     def add_options(cls, parser):

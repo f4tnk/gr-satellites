@@ -78,7 +78,9 @@ class ngham_deframer(gr.hier_block2, options_block):
         self.msg_connect((self.padding, 'out'), (self.crc, 'in'))
         self.msg_connect((self.crc, 'ok'), (self, 'out'))
 
-    _default_sync_threshold = 4
+    # F4TNK It#1: increased from 4 to 5 — NGHam has CRC-16 + RS (optional)
+    # downstream; allowing 1 more syncword error is safe.
+    _default_sync_threshold = 5
 
     @classmethod
     def add_options(cls, parser):
