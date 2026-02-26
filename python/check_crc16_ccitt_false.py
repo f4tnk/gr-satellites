@@ -90,11 +90,33 @@ class check_crc16_ccitt_false(gr.basic_block):
         msg_out = pmt.cons(pmt.car(msg_pmt),
                            pmt.init_u8vector(len(packet_out), packet_out))
         crc = crc16_ccitt_false(packet_out)
-        if crc == struct.unpack('<H', bytes(packet[-2:]))[0]:
+        expected_crc = struct.unpack('<H', bytes(packet[-2:]))[0]
+        if crc == expected_crc:
             if self.verbose:
                 print('CRC OK')
             self.message_port_pub(pmt.intern('ok'), msg_out)
         else:
-            if self.verbose:
-                print('CRC failed')
-            self.message_port_pub(pmt.intern('fail'), msg_out)
+            # F4TNK It#5: 1-bit-flip CRC-16-CCITT-FALSE retry
+            corrected = self._try_1bit_flip(packet_out, expected_crc)
+            if corrected is not None:
+                if self.verbose:
+                    print('CRC OK (1-bit corrected)')
+                msg_corr = pmt.cons(
+                    pmt.car(msg_pmt),
+                    pmt.init_u8vector(len(corrected), corrected))
+                self.message_port_pub(pmt.intern('ok'), msg_corr)
+            else:
+                if self.verbose:
+                    print('CRC failed')
+                self.message_port_pub(pmt.intern('fail'), msg_out)
+
+    def _try_1bit_flip(self, packet_out, expected_crc):
+        """F4TNK It#5: try flipping each bit in payload."""
+        data = bytearray(packet_out)
+        for byte_idx in range(len(data)):
+            for bit_idx in range(8):
+                data[byte_idx] ^= (1 << bit_idx)
+                if crc16_ccitt_false(data) == expected_crc:
+                    return bytes(data)
+                data[byte_idx] ^= (1 << bit_idx)
+        return None

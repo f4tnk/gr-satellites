@@ -100,6 +100,28 @@ class check_tt64_crc(gr.basic_block):
                 print('CRC OK')
             self.message_port_pub(pmt.intern('ok'), msg_out)
         else:
-            if self.verbose:
-                print('CRC failed')
-            self.message_port_pub(pmt.intern('fail'), msg_out)
+            # F4TNK It#5: 1-bit-flip CRC-16-ARC retry
+            corrected = self._try_1bit_flip(packet)
+            if corrected is not None:
+                if self.verbose:
+                    print('CRC OK (1-bit corrected)')
+                pkt_out = corrected[:-2] if self.strip else corrected
+                msg_corr = pmt.cons(
+                    pmt.PMT_NIL,
+                    pmt.init_u8vector(len(pkt_out), pkt_out))
+                self.message_port_pub(pmt.intern('ok'), msg_corr)
+            else:
+                if self.verbose:
+                    print('CRC failed')
+                self.message_port_pub(pmt.intern('fail'), msg_out)
+
+    def _try_1bit_flip(self, packet):
+        """F4TNK It#5: try flipping each bit in payload (excl. CRC)."""
+        packet = bytearray(packet)
+        for byte_idx in range(len(packet) - 2):
+            for bit_idx in range(8):
+                packet[byte_idx] ^= (1 << bit_idx)
+                if crc16_arc(packet) == 0:
+                    return bytes(packet)
+                packet[byte_idx] ^= (1 << bit_idx)
+        return None

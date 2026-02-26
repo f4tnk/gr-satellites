@@ -50,6 +50,28 @@ class check_swiatowid_crc(gr.basic_block):
                 print('CRC OK')
             self.message_port_pub(pmt.intern('ok'), msg_out)
         else:
-            if self.verbose:
-                print('CRC failed')
-            self.message_port_pub(pmt.intern('fail'), msg_out)
+            # F4TNK It#5: 1-bit-flip CRC retry
+            corrected = self._try_1bit_flip(packet_out, packet)
+            if corrected is not None:
+                if self.verbose:
+                    print('CRC OK (1-bit corrected)')
+                msg_corr = pmt.cons(
+                    pmt.car(msg_pmt),
+                    pmt.init_u8vector(len(corrected), corrected))
+                self.message_port_pub(pmt.intern('ok'), msg_corr)
+            else:
+                if self.verbose:
+                    print('CRC failed')
+                self.message_port_pub(pmt.intern('fail'), msg_out)
+
+    def _try_1bit_flip(self, packet_out, packet):
+        """F4TNK It#5: try flipping each bit in payload."""
+        data = bytearray(packet_out)
+        for byte_idx in range(len(data)):
+            for bit_idx in range(8):
+                data[byte_idx] ^= (1 << bit_idx)
+                crc = crc16_ccitt_zero(data)
+                if packet[-2] == crc & 0xff and packet[-1] == crc >> 8:
+                    return bytes(data)
+                data[byte_idx] ^= (1 << bit_idx)
+        return None
