@@ -36,6 +36,39 @@ class check_crc(gr.basic_block):
         self.message_port_register_out(pmt.intern('ok'))
         self.message_port_register_out(pmt.intern('fail'))
 
+    def _try_1bit_flip(self, packet, packet_crc):
+        """
+        F4TNK It#4: 1-bit-flip CRC-32C retry for CSP frames.
+
+        When CRC-32C fails, try flipping each bit in the payload
+        (excluding CSP header and CRC) and recompute. If a single
+        bit-flip produces a matching CRC-32C, return the corrected
+        packet. Otherwise return None.
+
+        CRC-32C collision probability per flip: ~1/(2^32) ≈ 2.3e-10
+        → essentially zero false positives.
+
+        CPU cost: N_bytes × 8 CRC computations. For a typical
+        CSP frame (< 256 bytes): ~2000 CRC ops ≈ 200-500 µs in Python.
+        Only triggered on CRC-failed frames.
+        """
+        packet = bytearray(packet)
+        # Determine CRC input range
+        if self.include_header:
+            crc_start = 0
+        else:
+            crc_start = 4  # skip CSP header
+        crc_end = len(packet) - 4  # exclude CRC-32C trailer
+
+        for byte_idx in range(crc_start, crc_end):
+            for bit_idx in range(8):
+                packet[byte_idx] ^= (1 << bit_idx)
+                crc_data = packet[crc_start:crc_end]
+                if crc32c.crc(crc_data) == packet_crc:
+                    return bytes(packet)
+                packet[byte_idx] ^= (1 << bit_idx)
+        return None
+
     def handle_msg(self, msg_pmt):
         msg = pmt.cdr(msg_pmt)
         if not pmt.is_u8vector(msg):
@@ -66,6 +99,16 @@ class check_crc(gr.basic_block):
                     print('CRC OK')
                 self.message_port_pub(pmt.intern('ok'), msg_pmt)
             else:
-                if self.verbose:
-                    print('CRC failed')
-                self.message_port_pub(pmt.intern('fail'), msg_pmt)
+                # F4TNK It#4: try 1-bit-flip correction before declaring fail
+                corrected = self._try_1bit_flip(packet, packet_crc)
+                if corrected is not None:
+                    if self.verbose:
+                        print('CRC OK (1-bit corrected)')
+                    corrected_pmt = pmt.cons(
+                        pmt.car(msg_pmt),
+                        pmt.init_u8vector(len(corrected), corrected))
+                    self.message_port_pub(pmt.intern('ok'), corrected_pmt)
+                else:
+                    if self.verbose:
+                        print('CRC failed')
+                    self.message_port_pub(pmt.intern('fail'), msg_pmt)
