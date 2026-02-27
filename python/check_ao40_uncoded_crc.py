@@ -41,6 +41,27 @@ class check_ao40_uncoded_crc(gr.basic_block):
                 print('CRC OK')
             self.message_port_pub(pmt.intern('ok'), msg_pmt)
         else:
-            if self.verbose:
-                print('CRC failed')
-            self.message_port_pub(pmt.intern('fail'), msg_pmt)
+            # F4TNK It#6: 1-bit-flip CRC retry
+            corrected = self._try_1bit_flip(packet)
+            if corrected is not None:
+                if self.verbose:
+                    print('CRC OK (1-bit corrected)')
+                msg_corr = pmt.cons(
+                    pmt.car(msg_pmt),
+                    pmt.init_u8vector(len(corrected), corrected))
+                self.message_port_pub(pmt.intern('ok'), msg_corr)
+            else:
+                if self.verbose:
+                    print('CRC failed')
+                self.message_port_pub(pmt.intern('fail'), msg_pmt)
+
+    def _try_1bit_flip(self, packet):
+        """F4TNK It#6: try flipping each bit and recheck CRC."""
+        packet = bytearray(packet)
+        for byte_idx in range(len(packet)):
+            for bit_idx in range(8):
+                packet[byte_idx] ^= (1 << bit_idx)
+                if crc(packet) == 0:
+                    return bytes(packet)
+                packet[byte_idx] ^= (1 << bit_idx)
+        return None
