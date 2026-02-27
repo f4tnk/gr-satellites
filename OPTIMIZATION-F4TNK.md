@@ -1241,3 +1241,46 @@ Eliminates per-frame heap allocation for error correction metadata.
 | F5 | HDLC persistent EC bufs | hdlc_deframer_impl.{h,cc} | 0 allocs per frame |
 
 **Tests**: 27/29 pass (2 pre-existing failures: `qa_costas_loop_8apsk_cc`, `qa_rms_agc_f`).
+
+---
+
+## Session 14 — AX.25 focus: faster 2-bit HDLC correction + dedicated benchmark
+
+Objective: maximize AX.25 frame recovery while reducing CPU cost in the CRC-fail path.
+
+### S14-1. `hdlc_deframer_impl`: 2-bit syndrome lookup without hash map
+
+**Files**: `lib/hdlc_deframer_impl.h`, `lib/hdlc_deframer_impl.cc`
+
+`unordered_map<uint16_t,size_t>` used for 2-bit correction lookup was replaced by
+a direct 16-bit index table:
+
+- `d_syn_index` (`vector<int32_t>`, size 65536) stores syndrome→position in O(1)
+- `d_syn_index_touched` tracks only updated entries for cheap reset
+- no per-frame hashing in the error-correction hot path
+
+This keeps behavior equivalent (same 1-bit then 2-bit strategy) while lowering
+CPU overhead on noisy passes where many frames fail initial CRC.
+
+### S14-2. AX.25 benchmark added
+
+**File**: `python/bench_optimizations.py`
+
+Added `bench_ax25_hdlc()` with synthetic AX.25-like frames, HDLC bit-stuffing,
+and two scenarios:
+
+- clean stream (baseline throughput)
+- one random bit flip per frame (recovery stress test)
+
+Latest results:
+
+| Scenario | Throughput | Recovered frames | Frame rate |
+|----------|------------|------------------|------------|
+| clean | 37.3 Mbit/s | 3000 / 3000 (100.0%) | 44.2 kframes/s |
+| 1-bit/frame | 31.5 Mbit/s | 2798 / 3000 (93.3%) | 34.8 kframes/s |
+
+### Validation
+
+- `python/qa_hdlc.py` ✅
+- `python/qa_nrzi.py` ✅
+- `python/bench_optimizations.py` ✅ (includes AX.25 bench)

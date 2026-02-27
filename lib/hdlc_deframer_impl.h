@@ -13,7 +13,7 @@
 #define INCLUDED_SATELLITES_HDLC_DEFRAMER_IMPL_H
 
 #include <satellites/hdlc_deframer.h>
-#include <unordered_map>
+#include <cstdint>
 #include <vector>
 
 namespace gr {
@@ -36,8 +36,9 @@ private:
         int bit_idx;
         uint16_t syndrome;
     };
-    std::vector<bit_info> d_bits_ec;                 // syndrome table for EC
-    std::unordered_map<uint16_t, size_t> d_syn_map;  // syndrome→index for 2-bit EC
+    std::vector<bit_info> d_bits_ec;           // syndrome table for EC
+    std::vector<int32_t> d_syn_index;          // syndrome→position lookup (size 65536)
+    std::vector<uint16_t> d_syn_index_touched; // touched syndromes for fast reset
 
     /*!
      * \brief CRC-16-CCITT (ISO HDLC / X.25 / AX.25 FCS)

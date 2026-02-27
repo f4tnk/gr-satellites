@@ -222,6 +222,97 @@ def bench_doppler():
     print()
 
 
+def _build_hdlc_frame_bits(payload, crc_calc, preamble_bytes=4, postamble_bytes=2):
+    """Build HDLC bitstream for one frame (LSB-first, with bit-stuffing)."""
+    flag = [0, 1, 1, 1, 1, 1, 1, 0]
+
+    data = list(payload)
+    crc_val = crc_calc.compute(data)
+    data.append(crc_val & 0xFF)
+    data.append((crc_val >> 8) & 0xFF)
+
+    bits = flag * preamble_bytes
+    data_start = len(bits)
+
+    ones = 0
+    for byte in data:
+        for _ in range(8):
+            bit = byte & 1
+            bits.append(bit)
+            if bit:
+                ones += 1
+            else:
+                ones = 0
+            if ones == 5:
+                bits.append(0)
+                ones = 0
+            byte >>= 1
+
+    data_end = len(bits)
+    bits.extend(flag * postamble_bytes)
+    return bits, data_start, data_end
+
+
+def bench_ax25_hdlc():
+    """Benchmark AX.25-relevant HDLC deframing throughput and recovery."""
+    from satellites import hdlc_deframer, crc
+
+    print("=" * 70)
+    print("BENCH AX25: HDLC deframer throughput/recovery")
+    print("=" * 70)
+
+    rng = np.random.default_rng(12345)
+    n_frames = 3000
+    frame_len = 96
+
+    crc_calc = crc(16, 0x1021, 0xFFFF, 0xFFFF, True, True)
+
+    clean_stream = []
+    frame_ranges = []
+    cursor = 0
+
+    for _ in range(n_frames):
+        frame = rng.integers(0, 256, size=frame_len, dtype=np.uint8)
+        frame[:13] &= 0xFE
+        bits, start, end = _build_hdlc_frame_bits(frame.tolist(), crc_calc)
+        clean_stream.extend(bits)
+        frame_ranges.append((cursor + start, cursor + end))
+        cursor += len(bits)
+
+    clean_stream = np.array(clean_stream, dtype=np.uint8)
+    noisy_stream = clean_stream.copy()
+
+    for start, end in frame_ranges:
+        if end > start:
+            flip_idx = int(rng.integers(start, end))
+            noisy_stream[flip_idx] ^= 1
+
+    for label, stream in [("clean", clean_stream), ("1-bit/frame", noisy_stream)]:
+        src = blocks.vector_source_b(stream.tolist(), repeat=False)
+        deframer = hdlc_deframer(True, 10000)
+        dbg = blocks.message_debug()
+
+        tb = gr.top_block()
+        tb.connect(src, deframer)
+        tb.msg_connect((deframer, 'out'), (dbg, 'store'))
+
+        t0 = time.perf_counter()
+        tb.start()
+        tb.wait()
+        elapsed = time.perf_counter() - t0
+
+        recovered = dbg.num_messages()
+        recovery = 100.0 * recovered / n_frames
+        bit_rate = fmt_rate(len(stream), elapsed)
+        frame_rate = recovered / elapsed if elapsed > 0 else float('inf')
+
+        print(f"  {label:10s}  bits={len(stream):9d}  {elapsed*1000:7.1f} ms  "
+              f"{bit_rate:>10s} bit/s  frames={recovered:4d}/{n_frames} "
+              f"({recovery:5.1f}%)  {frame_rate:8.1f} fr/s")
+
+    print()
+
+
 def bench_viterbi_standalone():
     """Benchmark Viterbi codec directly via C++ pybind, no flowgraph overhead."""
     print("=" * 70)
@@ -302,6 +393,7 @@ if __name__ == '__main__':
     bench_viterbi()
     bench_viterbi_standalone()
     bench_kiss_cpp_vs_python()
+    bench_ax25_hdlc()
     bench_doppler()
 
     print("Done.")

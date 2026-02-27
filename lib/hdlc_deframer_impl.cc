@@ -16,7 +16,6 @@
 #include "hdlc_deframer_impl.h"
 #include <gnuradio/io_signature.h>
 #include <algorithm>
-#include <unordered_map>
 
 namespace gr {
 namespace satellites {
@@ -202,24 +201,29 @@ void hdlc_deframer_impl::process_frame()
 
                 // --- Pass 2: 2-bit error correction ---
                 // For 2 errors at positions p1,p2: syn[p1] ^ syn[p2] = target
-                // ⟹ syn[p2] = target ^ syn[p1]. Hash-map lookup: O(n) amortized.
-                // Uses persistent d_syn_map (clear() keeps hash table memory).
+                // ⟹ syn[p2] = target ^ syn[p1].
+                // Uses direct 16-bit syndrome index table for O(1) lookup without hash.
                 if (!send && nbits <= 16000) {
-                    d_syn_map.clear();
-                    if (d_syn_map.bucket_count() < nbits) {
-                        d_syn_map.reserve(nbits);
+                    d_syn_index_touched.clear();
+                    if (d_syn_index_touched.capacity() < nbits) {
+                        d_syn_index_touched.reserve(nbits);
                     }
+
                     for (size_t p = 0; p < nbits; p++) {
-                        d_syn_map.emplace(d_bits_ec[p].syndrome, p);
+                        const uint16_t syn = d_bits_ec[p].syndrome;
+                        if (d_syn_index[syn] < 0) {
+                            d_syn_index[syn] = (int32_t)p;
+                            d_syn_index_touched.push_back(syn);
+                        }
                     }
 
                     for (size_t p1 = 0; p1 < nbits && !send; p1++) {
                         uint16_t needed = target ^ d_bits_ec[p1].syndrome;
                         if (needed == 0)
                             continue; // 1-bit case already handled
-                        auto it = d_syn_map.find(needed);
-                        if (it != d_syn_map.end() && it->second > p1) {
-                            size_t p2 = it->second;
+                        const int32_t p2i = d_syn_index[needed];
+                        if (p2i >= 0 && (size_t)p2i > p1) {
+                            const size_t p2 = (size_t)p2i;
                             d_pktbuf[d_bits_ec[p1].byte_idx] ^= (uint8_t)(1u << d_bits_ec[p1].bit_idx);
                             d_pktbuf[d_bits_ec[p2].byte_idx] ^= (uint8_t)(1u << d_bits_ec[p2].bit_idx);
                             if (fcs_ok(d_pktbuf.data(), nbytes)) {
@@ -229,6 +233,11 @@ void hdlc_deframer_impl::process_frame()
                                 d_pktbuf[d_bits_ec[p2].byte_idx] ^= (uint8_t)(1u << d_bits_ec[p2].bit_idx);
                             }
                         }
+                    }
+
+                    // Reset only touched entries.
+                    for (uint16_t syn : d_syn_index_touched) {
+                        d_syn_index[syn] = -1;
                     }
                 }
             }
@@ -261,7 +270,8 @@ hdlc_deframer_impl::hdlc_deframer_impl(bool check_fcs, int max_length)
       d_byte_count(0),
       d_bit_pos(0),
       d_ones(0),
-      d_port(pmt::intern("out"))
+      d_port(pmt::intern("out")),
+      d_syn_index(65536, -1)
 {
     message_port_register_out(d_port);
 }
