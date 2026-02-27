@@ -10,13 +10,11 @@
 
 from gnuradio import gr
 
-api_version = int(gr.api_version())
-minor_version = int(gr.minor_version())
-
-if api_version <= 3 and minor_version < 2:
-    from . import crc_check
-else:
-    from gnuradio.digital import crc_check
+# F4TNK: Always use gr-satellites crc_check which includes
+# 1-bit-flip error correction retry on CRC failure.
+# The gr-satellites version is API-compatible with gnuradio.digital.crc_check
+# but adds automatic single-bit error recovery.
+from . import crc_check
 
 
 def crc16_arc(swap_endianness=True, discard_crc=True):

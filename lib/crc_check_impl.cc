@@ -106,14 +106,39 @@ void crc_check_impl::msg_handler(pmt::pmt_t pmt_msg)
         }
     }
 
+    const std::size_t payload_len = size - d_header_bytes - num_bytes;
     const uint64_t crc_computed =
-        d_crc.compute(&msg[d_header_bytes], size - d_header_bytes - num_bytes);
+        d_crc.compute(&msg[d_header_bytes], payload_len);
 
-    const bool crc_ok = crc_computed == msg_crc;
+    bool crc_ok = crc_computed == msg_crc;
     if (crc_ok) {
         this->d_logger->info("CRC OK");
     } else {
-        this->d_logger->info("CRC fail");
+        // 1-bit-flip retry: try flipping each bit in the payload
+        // Guard: only attempt for frames <= 2000 bytes (16000 bits)
+        if (payload_len <= 2000) {
+            for (std::size_t byte_idx = 0; byte_idx < payload_len; ++byte_idx) {
+                const std::size_t abs_idx = d_header_bytes + byte_idx;
+                const uint8_t orig = msg[abs_idx];
+                for (int bit = 0; bit < 8; ++bit) {
+                    msg[abs_idx] = orig ^ (1u << bit);
+                    const uint64_t retry_crc =
+                        d_crc.compute(&msg[d_header_bytes], payload_len);
+                    if (retry_crc == msg_crc) {
+                        crc_ok = true;
+                        this->d_logger->info(
+                            "CRC OK after 1-bit correction at byte {:d} bit {:d}",
+                            byte_idx, bit);
+                        break;
+                    }
+                }
+                if (crc_ok) break;
+                msg[abs_idx] = orig;  // restore original byte
+            }
+        }
+        if (!crc_ok) {
+            this->d_logger->info("CRC fail");
+        }
     }
 
     const auto out_size = d_discard_crc ? size - num_bytes : size;
