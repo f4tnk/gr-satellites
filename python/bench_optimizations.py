@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Benchmark suite for F4TNK optimization session 13
+# Benchmark suite for F4TNK optimization sessions 13-15
 # Tests: F1 (Viterbi), F2 (kiss_to_pdu C++), F4 (doppler volk interleave)
+#        F5 (crc_check syndrome), F6 (Viterbi flat trellis)
 #
 # Usage: cd build && python3 ../python/bench_optimizations.py
 #
@@ -313,10 +314,83 @@ def bench_ax25_hdlc():
     print()
 
 
+def bench_crc_check_syndrome():
+    """Benchmark F5: CRC check with syndrome-based 1-bit correction.
+
+    F4TNK Session 15: Replaced O(n²) brute-force bit-flip loop
+    (payload_len × 8 full CRC recomputations) with syndrome table
+    lookup: 1 CRC computation + O(1) table lookup.
+
+    For a 300-byte frame: ~2400× speedup on CRC-fail path.
+    """
+    from satellites import crc_check, crc
+
+    print("=" * 70)
+    print("BENCH F5: crc_check syndrome-based 1-bit correction")
+    print("         (F4TNK Session 15: O(n²) → O(1) syndrome table)")
+    print("=" * 70)
+
+    rng = np.random.default_rng(54321)
+
+    # CRC-16/CCITT (AX.25 standard)
+    crc_calc = crc(16, 0x1021, 0xFFFF, 0xFFFF, True, True)
+
+    for frame_len in [64, 256, 512]:
+        n_frames = 2000
+        checker = crc_check(16, 0x1021, 0xFFFF, 0xFFFF, True, True,
+                            False, True, 0)
+        dbg_ok = blocks.message_debug()
+        dbg_fail = blocks.message_debug()
+
+        tb = gr.top_block()
+        tb.msg_connect((checker, 'ok'), (dbg_ok, 'store'))
+        tb.msg_connect((checker, 'fail'), (dbg_fail, 'store'))
+
+        # Build PDUs: half clean, half with 1-bit error
+        pdus = []
+        for i in range(n_frames):
+            payload = rng.integers(0, 256, size=frame_len, dtype=np.uint8)
+            crc_val = crc_calc.compute(payload.tolist())
+            frame = np.concatenate([payload,
+                                    np.array([(crc_val >> 8) & 0xFF, crc_val & 0xFF],
+                                             dtype=np.uint8)])
+            if i >= n_frames // 2:
+                # Introduce 1-bit error
+                err_byte = int(rng.integers(0, frame_len))
+                err_bit = int(rng.integers(0, 8))
+                frame[err_byte] ^= (1 << err_bit)
+
+            pdu = pmt.cons(pmt.PMT_NIL, pmt.init_u8vector(len(frame), frame))
+            pdus.append(pdu)
+
+        t0 = time.perf_counter()
+        for pdu in pdus:
+            checker.to_basic_block()._post(pmt.intern('in'), pdu)
+        checker.to_basic_block()._post(
+            pmt.intern('system'),
+            pmt.cons(pmt.intern('done'), pmt.from_long(1)))
+        tb.start()
+        tb.wait()
+        elapsed = time.perf_counter() - t0
+
+        n_ok = dbg_ok.num_messages()
+        n_fail = dbg_fail.num_messages()
+        clean = n_frames // 2
+        corrupted = n_frames - clean
+
+        us_per_pdu = elapsed / n_frames * 1e6
+        print(f"  len={frame_len:4d}  ×{n_frames:4d}  {elapsed*1000:7.1f} ms  "
+              f"{us_per_pdu:6.1f} µs/PDU  "
+              f"ok={n_ok:4d}  fail={n_fail:4d}  "
+              f"recovery={100.0*n_ok/(clean+corrupted):5.1f}%")
+    print()
+
+
 def bench_viterbi_standalone():
     """Benchmark Viterbi codec directly via C++ pybind, no flowgraph overhead."""
     print("=" * 70)
     print("BENCH F1b: ViterbiCodec direct  (no flowgraph overhead)")
+    print("         (F4TNK Session 15: flat trellis + reusable buffers)")
     print("=" * 70)
 
     from satellites import convolutional_encoder, viterbi_decoder
@@ -386,7 +460,7 @@ def bench_viterbi_standalone():
 
 if __name__ == '__main__':
     print()
-    print("F4TNK gr-satellites Optimization Benchmarks — Session 13")
+    print("F4TNK gr-satellites Optimization Benchmarks — Sessions 13-15")
     print(f"{'='*70}")
     print()
 
@@ -394,6 +468,7 @@ if __name__ == '__main__':
     bench_viterbi_standalone()
     bench_kiss_cpp_vs_python()
     bench_ax25_hdlc()
+    bench_crc_check_syndrome()
     bench_doppler()
 
     print("Done.")

@@ -28,15 +28,13 @@ public:
 
     // Encode / Decode operate on arrays of uint8_t where each element is 0 or 1.
     std::vector<uint8_t> Encode(const uint8_t* bits, size_t len) const;
-    std::vector<uint8_t> Decode(const uint8_t* bits, size_t len) const;
+    std::vector<uint8_t> Decode(const uint8_t* bits, size_t len);
 
     int constraint() const { return constraint_; }
 
     const std::vector<int>& polynomials() const { return polynomials_; }
 
 private:
-    typedef std::vector<std::vector<int>> Trellis;
-
     int num_parity_bits() const;
 
     void InitializeOutputs();
@@ -53,9 +51,7 @@ private:
                                    const std::vector<int>& prev_path_metrics,
                                    int state) const;
 
-    void UpdatePathMetrics(uint32_t bits,
-                           std::vector<int>* path_metrics,
-                           Trellis* trellis) const;
+    void UpdatePathMetrics(uint32_t bits, int step);
 
     const int constraint_;
     const std::vector<int> polynomials_;
@@ -64,6 +60,17 @@ private:
     // Index = current_state | (input << (constraint_ - 1)).
     // Bit j of the value = output of polynomial j.
     std::vector<uint32_t> outputs_;
+
+    // F4TNK: Flat trellis — single contiguous allocation instead of
+    // vector-of-vectors. Eliminates ~N heap allocs per decode call.
+    // Layout: trellis_[step * num_states + state] = source_state.
+    std::vector<int> trellis_flat_;
+    size_t trellis_capacity_;  // max steps allocated
+
+    // F4TNK: Reusable path metric buffers — eliminates 2×N heap allocs
+    // per decode in UpdatePathMetrics.
+    std::vector<int> path_metrics_;
+    std::vector<int> new_path_metrics_;
 };
 
 std::ostream& operator<<(std::ostream& os, const ViterbiCodec& codec);

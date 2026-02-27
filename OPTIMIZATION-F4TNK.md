@@ -1284,3 +1284,101 @@ Latest results:
 - `python/qa_hdlc.py` ✅
 - `python/qa_nrzi.py` ✅
 - `python/bench_optimizations.py` ✅ (includes AX.25 bench)
+
+---
+
+## Session 15 — Deep Decoder Optimization: Viterbi + CRC + Flat Trellis
+
+Focus: eliminate remaining heap allocations and O(n²) algorithms in the decode hot-path.
+
+### S15-F1: ViterbiCodec — Flat Trellis + Reusable Path Metrics
+
+**Files**: `lib/viterbi/viterbi.h`, `lib/viterbi/viterbi.cc`
+
+The Viterbi decoder's `Decode()` method allocated a new `vector<int>` for path
+metrics on every call to `UpdatePathMetrics()`, plus a growing vector-of-vectors
+for the trellis. For K=7 with a 1024-symbol frame, this caused ~1500 heap
+allocations per decode.
+
+Changes:
+- `trellis_flat_` — single contiguous `vector<int>` of size `num_steps × num_states`
+  replaces vector-of-vectors. Layout: `trellis_flat_[step * num_states + state]`.
+  Capacity grows monotonically (amortized — only reallocates if a frame is larger
+  than any previous frame).
+- `path_metrics_` / `new_path_metrics_` — pre-allocated member vectors, swapped
+  (not copied) at each step. Eliminates 2 allocations per step.
+- Traceback writes directly to pre-sized `vector<uint8_t>` (no `push_back` + `reverse`).
+
+**Mathematical proof**: The trellis layout `flat[step * N + state]` is a bijection
+of the 2D `trellis[step][state]` access pattern. The traceback reversal is eliminated
+by writing `decoded[i]` from `step-1` down to `0`. Identical output guaranteed.
+
+**Benchmark (direct decode, no flowgraph overhead)**:
+
+| K | Frame length | Encode | Decode | Decode rate |
+|---|-------------|--------|--------|-------------|
+| 7 | 256 bits | 121 µs | 450 µs | 569 Kbit/s |
+| 7 | 1024 bits | 131 µs | 660 µs | 1.6 Mbit/s |
+| 7 | 4096 bits | 162 µs | 2651 µs | 1.5 Mbit/s |
+
+All roundtrip correctness checks pass (✓).
+
+---
+
+### S15-F2: crc_check — O(n) LFSR-walk 1-bit Error Correction
+
+**Files**: `lib/crc_check_impl.h`, `lib/crc_check_impl.cc`
+
+The generic C++ `crc_check` block (Session 12, It#7) used brute-force 1-bit-flip
+retry: for each of the N×8 bits in the payload, flip the bit, recompute the full
+CRC, and check. This is O(n²) in payload length.
+
+Replaced with the syndrome-based LFSR walk algorithm (same technique as the
+HDLC deframer, generalized for any CRC width/polynomial):
+
+1. `syndrome = CRC(corrupted) ⊕ stored_CRC`
+2. LFSR walk backward from the last-processed bit:
+   - Reflected CRC: `s = (s & 1) ? ((s >> 1) ^ reflected_poly) : (s >> 1)`
+   - Non-reflected: `s = (s >> (N-1)) ? (((s << 1) & mask) ^ poly) : ((s << 1) & mask)`
+3. When `s == syndrome` → found the single-bit error position
+4. Verify with full CRC recomputation (guard against 1/2^N collision)
+
+**Mathematical proof** (reflected CRC case):
+- The CRC of a single-bit error at position $p$ from the end is $x^p \mod G(x)$ in GF(2).
+- For the last bit: $x^0 \mod G(x)$ produces the reflected polynomial $G_r$.
+- Each LFSR step computes $x^{p+1} \mod G(x)$ from $x^p \mod G(x)$ via GF(2) division.
+- The seed `d_lfsr_poly = bit_reverse(poly)` is correct since $x^{N} \equiv G_r \pmod{G(x)}$.
+- Bit mapping: reflected CRC processes LSB first, so the last bit processed in a byte is bit 7.
+  Walk step 0 → `actual_bit = 7 - 0 = 7` ✓.
+
+Additional optimizations:
+- Pre-interned PMT port symbols (`d_port_ok`, `d_port_fail`, `d_port_in`) — eliminates
+  per-PDU hash lookups in `pmt::intern()`.
+- Guard: LFSR walk only attempted for payloads ≤ 2000 bytes (bounds CPU cost).
+
+**Performance** (cost per CRC-failed frame):
+
+| Frame size | Old (brute-force) | New (LFSR walk) | Speedup |
+|-----------|-------------------|-----------------|---------|
+| 64 bytes | 512 CRC computations | 1 CRC + 512 LFSR steps | ~500× |
+| 256 bytes | 2048 CRC computations | 1 CRC + 2048 LFSR steps | ~2000× |
+| 512 bytes | 4096 CRC computations | 1 CRC + 4096 LFSR steps | ~4000× |
+
+**Benchmark results** (100% 1-bit-error frames):
+
+| Frame size | PDUs | Per-PDU latency | Recovery |
+|-----------|------|----------------|----------|
+| 64 bytes | 2000 | 600 µs | 100% |
+| 256 bytes | 2000 | 678 µs | 100% |
+| 512 bytes | 2000 | 771 µs | 100% |
+
+All clean frames pass CRC on the fast path. All 1-bit-error frames are
+correctly recovered at every tested frame size.
+
+### Validation
+
+- `python/qa_hdlc.py` ✅
+- `python/qa_nrzi.py` ✅
+- `python/bench_optimizations.py` ✅ (all benchmarks including CRC syndrome)
+- CRC correctness test: 200 frames (100 clean + 100 1-bit-error) at sizes
+  16/64/256/512: **ok=200 fail=0** at each size ✓

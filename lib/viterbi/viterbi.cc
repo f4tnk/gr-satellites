@@ -40,7 +40,8 @@ int ReverseBits(int num_bits, int input)
 }
 
 ViterbiCodec::ViterbiCodec(int constraint, const std::vector<int>& polynomials)
-    : constraint_(constraint), polynomials_(polynomials)
+    : constraint_(constraint), polynomials_(polynomials),
+      trellis_capacity_(0)
 {
     assert(!polynomials_.empty());
     assert(num_parity_bits() <= 32);  // must fit in uint32_t
@@ -49,6 +50,11 @@ ViterbiCodec::ViterbiCodec(int constraint, const std::vector<int>& polynomials)
         assert(polynomials_[i] < (1 << constraint_));
     }
     InitializeOutputs();
+
+    // F4TNK: Pre-allocate reusable path metric buffers
+    const int num_states = 1 << (constraint_ - 1);
+    path_metrics_.resize(num_states);
+    new_path_metrics_.resize(num_states);
 }
 
 int ViterbiCodec::num_parity_bits() const { return polynomials_.size(); }
@@ -146,33 +152,45 @@ std::pair<int, int> ViterbiCodec::PathMetric(uint32_t bits,
     }
 }
 
-void ViterbiCodec::UpdatePathMetrics(uint32_t bits,
-                                     std::vector<int>* path_metrics,
-                                     Trellis* trellis) const
+/*
+ * F4TNK: UpdatePathMetrics with pre-allocated flat trellis.
+ * Eliminates 2 heap allocations per step (new_path_metrics + new_trellis_column).
+ * Uses member buffers path_metrics_ and new_path_metrics_ (swap instead of alloc).
+ * Trellis stored in flat layout: trellis_flat_[step * num_states + state].
+ */
+void ViterbiCodec::UpdatePathMetrics(uint32_t bits, int step)
 {
-    std::vector<int> new_path_metrics(path_metrics->size());
-    std::vector<int> new_trellis_column(1 << (constraint_ - 1));
-    for (int i = 0; i < (int)path_metrics->size(); i++) {
-        std::pair<int, int> p = PathMetric(bits, *path_metrics, i);
-        new_path_metrics[i] = p.first;
-        new_trellis_column[i] = p.second;
+    const int num_states = (int)path_metrics_.size();
+    int* trellis_col = &trellis_flat_[step * num_states];
+
+    for (int i = 0; i < num_states; i++) {
+        std::pair<int, int> p = PathMetric(bits, path_metrics_, i);
+        new_path_metrics_[i] = p.first;
+        trellis_col[i] = p.second;
     }
 
-    *path_metrics = std::move(new_path_metrics);
-    trellis->push_back(std::move(new_trellis_column));
+    std::swap(path_metrics_, new_path_metrics_);
 }
 
-std::vector<uint8_t> ViterbiCodec::Decode(const uint8_t* bits, size_t len) const
+std::vector<uint8_t> ViterbiCodec::Decode(const uint8_t* bits, size_t len)
 {
     const int npb = num_parity_bits();
+    const int num_states = 1 << (constraint_ - 1);
+    const size_t num_steps = (len + npb - 1) / npb;
 
-    // Compute path metrics and generate trellis.
-    Trellis trellis;
-    trellis.reserve(len / npb);
-    std::vector<int> path_metrics(1 << (constraint_ - 1),
-                                  std::numeric_limits<int>::max());
-    path_metrics.front() = 0;
+    // F4TNK: Ensure flat trellis is large enough (amortized — only reallocates
+    // if this frame is larger than any previous frame).
+    if (num_steps > trellis_capacity_) {
+        trellis_flat_.resize(num_steps * num_states);
+        trellis_capacity_ = num_steps;
+    }
 
+    // Initialize path metrics
+    std::fill(path_metrics_.begin(), path_metrics_.end(),
+              std::numeric_limits<int>::max());
+    path_metrics_[0] = 0;
+
+    int step = 0;
     for (size_t i = 0; i < len; i += npb) {
         // Pack num_parity_bits() input bits into a uint32_t.
         uint32_t packed = 0;
@@ -180,20 +198,18 @@ std::vector<uint8_t> ViterbiCodec::Decode(const uint8_t* bits, size_t len) const
         for (int j = 0; j < available; j++) {
             packed |= (static_cast<uint32_t>(bits[i + j]) << j);
         }
-        // Missing bits remain zero (trailing zero fill).
-        UpdatePathMetrics(packed, &path_metrics, &trellis);
+        UpdatePathMetrics(packed, step);
+        step++;
     }
 
-    // Traceback.
-    std::vector<uint8_t> decoded;
-    decoded.reserve(trellis.size());
+    // Traceback using flat trellis.
+    std::vector<uint8_t> decoded(step);
     int state =
-        std::min_element(path_metrics.begin(), path_metrics.end()) - path_metrics.begin();
-    for (int i = trellis.size() - 1; i >= 0; i--) {
-        decoded.push_back(static_cast<uint8_t>(state >> (constraint_ - 2) ? 1 : 0));
-        state = trellis[i][state];
+        std::min_element(path_metrics_.begin(), path_metrics_.end()) - path_metrics_.begin();
+    for (int i = step - 1; i >= 0; i--) {
+        decoded[i] = static_cast<uint8_t>((state >> (constraint_ - 2)) ? 1 : 0);
+        state = trellis_flat_[i * num_states + state];
     }
-    std::reverse(decoded.begin(), decoded.end());
 
     // Remove (constraint_ - 1) flushing bits.
     if ((int)decoded.size() > constraint_ - 1) {
