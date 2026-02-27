@@ -170,26 +170,18 @@ void hdlc_deframer_impl::process_frame()
             if (target == 0) {
                 send = true;
             } else {
-                // Build per-bit syndrome table.
+                // Build per-bit syndrome table using persistent buffer.
                 // Walk backward: start at last byte, bit 7 (seed = 0x8408),
                 // then decrement through (byte, bit) = (n-1,7) → (n-1,6) →
                 // ... → (0,1) → (0,0). Each step applies a forward LFSR shift.
-                //
-                // We store flat array: pos[k] = {byte_idx, bit_idx, syndrome}
-                // where k goes 0..(nbits-1) in the order the LFSR walks.
-                struct bit_info {
-                    int byte_idx;
-                    int bit_idx;
-                    uint16_t syndrome;
-                };
-                std::vector<bit_info> bits(nbits);
+                d_bits_ec.resize(nbits);
                 uint16_t s = 0x8408;
                 size_t k = 0;
                 for (int i = (int)nbytes - 1; i >= 0; i--) {
                     for (int b = 7; b >= 0; b--) {
-                        bits[k].byte_idx = i;
-                        bits[k].bit_idx = b;
-                        bits[k].syndrome = s;
+                        d_bits_ec[k].byte_idx = i;
+                        d_bits_ec[k].bit_idx = b;
+                        d_bits_ec[k].syndrome = s;
                         k++;
                         s = (s & 1) ? (uint16_t)(((s >> 1) ^ 0x8408u) & 0xFFFFu)
                                     : (uint16_t)((s >> 1) & 0xFFFFu);
@@ -198,12 +190,12 @@ void hdlc_deframer_impl::process_frame()
 
                 // --- Pass 1: 1-bit error correction ---
                 for (size_t p = 0; p < nbits && !send; p++) {
-                    if (bits[p].syndrome == target) {
-                        d_pktbuf[bits[p].byte_idx] ^= (uint8_t)(1u << bits[p].bit_idx);
+                    if (d_bits_ec[p].syndrome == target) {
+                        d_pktbuf[d_bits_ec[p].byte_idx] ^= (uint8_t)(1u << d_bits_ec[p].bit_idx);
                         if (fcs_ok(d_pktbuf.data(), nbytes)) {
                             send = true;
                         } else {
-                            d_pktbuf[bits[p].byte_idx] ^= (uint8_t)(1u << bits[p].bit_idx);
+                            d_pktbuf[d_bits_ec[p].byte_idx] ^= (uint8_t)(1u << d_bits_ec[p].bit_idx);
                         }
                     }
                 }
@@ -211,27 +203,30 @@ void hdlc_deframer_impl::process_frame()
                 // --- Pass 2: 2-bit error correction ---
                 // For 2 errors at positions p1,p2: syn[p1] ^ syn[p2] = target
                 // ⟹ syn[p2] = target ^ syn[p1]. Hash-map lookup: O(n) amortized.
+                // Uses persistent d_syn_map (clear() keeps hash table memory).
                 if (!send && nbits <= 16000) {
-                    std::unordered_map<uint16_t, size_t> syn_map;
-                    syn_map.reserve(nbits);
+                    d_syn_map.clear();
+                    if (d_syn_map.bucket_count() < nbits) {
+                        d_syn_map.reserve(nbits);
+                    }
                     for (size_t p = 0; p < nbits; p++) {
-                        syn_map.emplace(bits[p].syndrome, p);
+                        d_syn_map.emplace(d_bits_ec[p].syndrome, p);
                     }
 
                     for (size_t p1 = 0; p1 < nbits && !send; p1++) {
-                        uint16_t needed = target ^ bits[p1].syndrome;
+                        uint16_t needed = target ^ d_bits_ec[p1].syndrome;
                         if (needed == 0)
                             continue; // 1-bit case already handled
-                        auto it = syn_map.find(needed);
-                        if (it != syn_map.end() && it->second > p1) {
+                        auto it = d_syn_map.find(needed);
+                        if (it != d_syn_map.end() && it->second > p1) {
                             size_t p2 = it->second;
-                            d_pktbuf[bits[p1].byte_idx] ^= (uint8_t)(1u << bits[p1].bit_idx);
-                            d_pktbuf[bits[p2].byte_idx] ^= (uint8_t)(1u << bits[p2].bit_idx);
+                            d_pktbuf[d_bits_ec[p1].byte_idx] ^= (uint8_t)(1u << d_bits_ec[p1].bit_idx);
+                            d_pktbuf[d_bits_ec[p2].byte_idx] ^= (uint8_t)(1u << d_bits_ec[p2].bit_idx);
                             if (fcs_ok(d_pktbuf.data(), nbytes)) {
                                 send = true;
                             } else {
-                                d_pktbuf[bits[p1].byte_idx] ^= (uint8_t)(1u << bits[p1].bit_idx);
-                                d_pktbuf[bits[p2].byte_idx] ^= (uint8_t)(1u << bits[p2].bit_idx);
+                                d_pktbuf[d_bits_ec[p1].byte_idx] ^= (uint8_t)(1u << d_bits_ec[p1].bit_idx);
+                                d_pktbuf[d_bits_ec[p2].byte_idx] ^= (uint8_t)(1u << d_bits_ec[p2].bit_idx);
                             }
                         }
                     }

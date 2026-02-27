@@ -2,55 +2,39 @@
 //
 // Author: Min Xu <xukmin@gmail.com>
 // Date: 01/30/2015
+//
+// Optimized by F4TNK: std::string elimination — all internal paths use packed
+// uint32_t parity bits with __builtin_popcount for Hamming distance.
+// Public API changed from std::string to uint8_t*/vector<uint8_t>.
 
 #ifndef VITERBI_H_
 #define VITERBI_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <ostream>
-#include <string>
 #include <utility>
 #include <vector>
 
 // This class implements both a Viterbi Decoder and a Convolutional Encoder.
+// All data paths use packed integer parity bits — zero heap allocations in the
+// hot loop.
 class ViterbiCodec
 {
 public:
-    // Note about Polynomial Descriptor of a Convolutional Encoder / Decoder.
-    // A generator polymonial is built as follows: Build a binary number
-    // representation by placing a 1 in each spot where a connection line from
-    // the shift register feeds into the adder, and a zero elsewhere. There are 2
-    // ways to arrange the bits:
-    // 1. msb-current
-    //    The MSB of the polynomial corresponds to the current input, while the
-    //    LSB corresponds to the oldest input that still remains in the shift
-    //    register.
-    //    This representation is used by MATLAB. See
-    //    http://radio.feld.cvut.cz/matlab/toolbox/comm/tutor124.html
-    // 2. lsb-current
-    //    The LSB of the polynomial corresponds to the current input, while the
-    //    MSB corresponds to the oldest input that still remains in the shift
-    //    register.
-    //    This representation is used by the Spiral Viterbi Decoder Software
-    //    Generator. See http://www.spiral.net/software/viterbi.html
-    // We use 2.
+    // Polynomial Descriptor: lsb-current convention.
+    // See http://www.spiral.net/software/viterbi.html
     ViterbiCodec(int constraint, const std::vector<int>& polynomials);
 
-    std::string Encode(const std::string& bits) const;
-
-    std::string Decode(const std::string& bits) const;
+    // Encode / Decode operate on arrays of uint8_t where each element is 0 or 1.
+    std::vector<uint8_t> Encode(const uint8_t* bits, size_t len) const;
+    std::vector<uint8_t> Decode(const uint8_t* bits, size_t len) const;
 
     int constraint() const { return constraint_; }
 
     const std::vector<int>& polynomials() const { return polynomials_; }
 
 private:
-    // Suppose
-    //
-    //     Trellis trellis;
-    //
-    // Then trellis[i][s] is the state in the (i - 1)th iteration which leads to
-    // the current state s in the ith iteration.
-    // It is used for traceback.
     typedef std::vector<std::vector<int>> Trellis;
 
     int num_parity_bits() const;
@@ -59,32 +43,27 @@ private:
 
     int NextState(int current_state, int input) const;
 
-    std::string Output(int current_state, int input) const;
+    // Returns packed parity bits as uint32_t (bit j = polynomial j output).
+    uint32_t Output(int current_state, int input) const;
 
-    int BranchMetric(const std::string& bits, int source_state, int target_state) const;
+    // Hamming distance via popcount on XOR of packed parity bits.
+    int BranchMetric(uint32_t bits, int source_state, int target_state) const;
 
-    // Given num_parity_bits() received bits, compute and returns path
-    // metric and its corresponding previous state.
-    std::pair<int, int> PathMetric(const std::string& bits,
+    std::pair<int, int> PathMetric(uint32_t bits,
                                    const std::vector<int>& prev_path_metrics,
                                    int state) const;
 
-    // Given num_parity_bits() received bits, update path metrics of all states
-    // in the current iteration, and append new traceback vector to trellis.
-    void UpdatePathMetrics(const std::string& bits,
+    void UpdatePathMetrics(uint32_t bits,
                            std::vector<int>* path_metrics,
                            Trellis* trellis) const;
 
     const int constraint_;
     const std::vector<int> polynomials_;
 
-    // The output table.
-    // The index is current input bit combined with previous inputs in the shift
-    // register. The value is the output parity bits in string format for
-    // convenience, e.g. "10". For example, suppose the shift register contains
-    // 0b10 (= 2), and the current input is 0b1 (= 1), then the index is 0b110 (=
-    // 6).
-    std::vector<std::string> outputs_;
+    // Output table: packed parity bits as uint32_t.
+    // Index = current_state | (input << (constraint_ - 1)).
+    // Bit j of the value = output of polynomial j.
+    std::vector<uint32_t> outputs_;
 };
 
 std::ostream& operator<<(std::ostream& os, const ViterbiCodec& codec);

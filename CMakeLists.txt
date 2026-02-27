@@ -25,6 +25,9 @@ cmake_minimum_required(VERSION 3.8)
 project(gr-satellites CXX C)
 enable_testing()
 
+# F4TNK: Required for LTO / IPO support
+cmake_policy(SET CMP0069 NEW)
+
 # Install to PyBOMBS target prefix if defined
 if(DEFINED ENV{PYBOMBS_PREFIX})
     set(CMAKE_INSTALL_PREFIX $ENV{PYBOMBS_PREFIX})
@@ -40,6 +43,19 @@ set(CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "")
 
 # Make sure our local CMake Modules path comes first
 list(INSERT CMAKE_MODULE_PATH 0 ${CMAKE_SOURCE_DIR}/cmake/Modules)
+
+# F4TNK: Enable Link-Time Optimization (LTO / IPO) for cross-TU inlining.
+# This allows the compiler to inline hot functions like ViterbiCodec::BranchMetric(),
+# crc::compute(), and hdlc_deframer::push_bit() across translation units.
+# Estimated 3-10% overall speedup.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported OUTPUT ipo_output)
+if(ipo_supported)
+    message(STATUS "F4TNK: LTO/IPO enabled")
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+else()
+    message(STATUS "F4TNK: LTO/IPO not supported: ${ipo_output}")
+endif()
 
 # Set the version information here
 set(VERSION_MAJOR 5)

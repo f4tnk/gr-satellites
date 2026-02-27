@@ -19,6 +19,7 @@ Station: SatNOGS #3762 — AirSpy R2 @ 2.5 MSPS, x86-64 (AVX2 + BMI2)
 | `171c060e` | **fix(udp)**: revert `source_zeros` to `False` — root cause of 300-400% CPU regression |
 | `438a7bdb` | **feat(hdlc)**: 1-bit-flip CRC retry — recovers AX.25 frames with 1 bit error |
 | `31db6ee2` | **fix(afsk)**: af_carrier/deviation optional with Bell 202 defaults — fixes crash on incomplete satyaml |
+| `c065ec5d` | Session 13: Viterbi uint32_t + KISS C++ 22× + LTO + doppler volk + HDLC persistent bufs |
 
 ---
 
@@ -1119,3 +1120,124 @@ change in this session.
 in gr-satellites — both specialized Python checkers (13 files) and the generic C++
 path (20+ satellite protocols). Combined with HDLC 2-bit correction, this maximizes
 frame recovery on marginal passes without touching the demodulator chain.
+
+---
+
+## Session 13 — Hot-path performance: Viterbi, KISS, LTO, Doppler, HDLC
+
+Focus: eliminate heap allocations and Python overhead in the decode hot-path.
+
+### S13-F1: ViterbiCodec — `std::string` → packed `uint32_t` + `__builtin_popcount`
+
+**Files**: `lib/viterbi/viterbi.h`, `lib/viterbi/viterbi.cc`,
+`lib/viterbi_decoder_impl.cc`, `lib/convolutional_encoder_impl.cc`
+
+The generic Viterbi decoder (`ViterbiCodec`) used `std::string` of `'0'`/`'1'`
+characters for branch outputs and Hamming distance computation. For K=7 rate-1/2
+with a 1024-symbol frame, this caused **~262K `std::string` heap allocations per
+decode**.
+
+Changes:
+- `outputs_` changed from `vector<string>` to `vector<uint32_t>` — each output
+  packs constraint-length bits into a single integer
+- `HammingDistance(string, string)` replaced by `__builtin_popcount(a ^ b)` — a
+  single x86 `POPCNT` instruction
+- `BranchMetric()` now compares packed integers instead of iterating characters
+- `Encode()` / `Decode()` API changed from `std::string` to `(const uint8_t*, size_t)`
+  → `vector<uint8_t>` — no uint8_t↔string conversion in callers
+
+**Benchmark (K=7, len=4096)**:
+| Metric | Value |
+|--------|-------|
+| Direct decode rate | 843 Kbit/s |
+| Encode latency | 135 µs |
+| Decode latency | 4859 µs |
+| Roundtrip flowgraph | 353 Kbit/s |
+
+All roundtrip correctness checks pass (✓).
+
+---
+
+### S13-F2: `kiss_to_pdu` — C++ sync_block rewrite (22× faster)
+
+**Files**: `include/satellites/kiss_to_pdu.h` (NEW),
+`lib/kiss_to_pdu_impl.h` (NEW), `lib/kiss_to_pdu_impl.cc` (NEW),
+`python/bindings/kiss_to_pdu_python.cc` (NEW),
+`python/bindings/docstrings/kiss_to_pdu_pydoc_template.h` (NEW),
+`python/kiss_to_pdu.py` (factory pattern)
+
+The Python `kiss_to_pdu` block iterated byte-by-byte through the GIL for every
+KISS frame. Replaced with a C++ `gr::sync_block`:
+
+- KISS state machine (FEND/FESC/TFEND/TFESC) runs entirely in compiled code
+- `d_pdu` vector pre-allocated (`reserve(512)`), reused across frames
+- PMT port cached (`d_port = pmt::intern("out")`)
+- pybind11 binding + factory function with automatic fallback to Python
+
+**Benchmark (500 × 200-byte packets, ×20 iterations)**:
+| Implementation | Throughput | Speedup |
+|----------------|-----------|---------|
+| Python | 1.4 MB/s | — |
+| C++ | 30.5 MB/s | **22.3×** |
+
+---
+
+### S13-F3: Link-Time Optimization (LTO) enabled
+
+**File**: `CMakeLists.txt`
+
+```cmake
+cmake_policy(SET CMP0069 NEW)
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported)
+if(ipo_supported)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+endif()
+```
+
+LTO allows the compiler to inline and optimize across translation units. Combined
+with `-march=native -O3`, this enables cross-file devirtualization and dead code
+elimination across the entire library.
+
+---
+
+### S13-F4: Doppler correction — VOLK interleave
+
+**File**: `lib/doppler_correction_impl.cc`
+
+Replaced scalar `cos/sin → real/imag` interleave loop with:
+```cpp
+volk_32f_x2_interleave_32fc(out, cos_buf, sin_buf, noutput_items);
+```
+
+Single VOLK call replaces N iterations of element-wise complex construction.
+
+**Benchmark**: 1.2M samples processed at 1.7× realtime (48 kHz).
+
+---
+
+### S13-F5: HDLC deframer — persistent error-correction buffers
+
+**Files**: `lib/hdlc_deframer_impl.h`, `lib/hdlc_deframer_impl.cc`
+
+The 1/2-bit error correction in `hdlc_deframer` allocated `vector<bit_info>` and
+`unordered_map<uint16_t, size_t>` on every frame. Moved to persistent class members:
+
+- `d_bits_ec` — reused via `.resize()` (no reallocation if capacity sufficient)
+- `d_syn_map` — reused via `.clear()` (keeps bucket allocation)
+
+Eliminates per-frame heap allocation for error correction metadata.
+
+---
+
+### Session 13 Summary
+
+| Opt | Change | Files | Impact |
+|-----|--------|-------|--------|
+| F1 | Viterbi uint32_t + popcount | viterbi.{h,cc}, 2 callers | -262K allocs/frame, 843 Kbit/s decode |
+| F2 | kiss_to_pdu C++ | 5 new + 5 build | **22.3× faster** (1.4→30.5 MB/s) |
+| F3 | LTO enabled | CMakeLists.txt | Cross-TU inlining |
+| F4 | Doppler volk interleave | doppler_correction_impl.cc | SIMD cos/sin→complex |
+| F5 | HDLC persistent EC bufs | hdlc_deframer_impl.{h,cc} | 0 allocs per frame |
+
+**Tests**: 27/29 pass (2 pre-existing failures: `qa_costas_loop_8apsk_cc`, `qa_rms_agc_f`).

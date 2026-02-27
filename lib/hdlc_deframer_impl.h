@@ -13,6 +13,7 @@
 #define INCLUDED_SATELLITES_HDLC_DEFRAMER_IMPL_H
 
 #include <satellites/hdlc_deframer.h>
+#include <unordered_map>
 #include <vector>
 
 namespace gr {
@@ -28,6 +29,15 @@ private:
     int d_bit_pos;                   // bits accumulated in current byte (0-7)
     int d_ones;                      // consecutive ones counter
     const pmt::pmt_t d_port;
+
+    // F4TNK: persistent error-correction buffers (allocated once, reused per frame)
+    struct bit_info {
+        int byte_idx;
+        int bit_idx;
+        uint16_t syndrome;
+    };
+    std::vector<bit_info> d_bits_ec;                 // syndrome table for EC
+    std::unordered_map<uint16_t, size_t> d_syn_map;  // syndrome→index for 2-bit EC
 
     /*!
      * \brief CRC-16-CCITT (ISO HDLC / X.25 / AX.25 FCS)

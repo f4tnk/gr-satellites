@@ -15,7 +15,6 @@
 #include "viterbi_decoder_impl.h"
 #include <gnuradio/io_signature.h>
 
-#include <string>
 #include <vector>
 
 namespace gr {
@@ -59,24 +58,10 @@ int viterbi_decoder_impl::general_work(int noutput_items,
 void viterbi_decoder_impl::msg_handler(pmt::pmt_t pmt_msg)
 {
     std::vector<uint8_t> msg = pmt::u8vector_elements(pmt::cdr(pmt_msg));
-    const size_t len = msg.size();
-    // Pre-allocate the input string to avoid repeated push_back reallocations
-    std::string bits(len, '0');
-    for (size_t i = 0; i < len; ++i) {
-        bits[i] = msg[i] ? '1' : '0';
-    }
-
-    std::string outbits = d_codec.Decode(bits);
-    const size_t outlen = outbits.size();
-    std::vector<uint8_t> out(outlen);
-    for (size_t i = 0; i < outlen; ++i) {
-        out[i] = (outbits[i] == '1') ? 1 : 0;
-    }
+    std::vector<uint8_t> out = d_codec.Decode(msg.data(), msg.size());
 
     message_port_pub(pmt::mp("out"),
                      pmt::cons(pmt::car(pmt_msg), pmt::init_u8vector(out.size(), out)));
-
-    return;
 }
 
 

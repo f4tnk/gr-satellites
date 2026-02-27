@@ -2,6 +2,10 @@
 //
 // Author: Min Xu <xukmin@gmail.com>
 // Date: 01/30/2015
+//
+// Optimized by F4TNK: std::string elimination — packed uint32_t parity bits
+// with __builtin_popcount for Hamming distance.  Zero heap allocations in the
+// decode hot loop (~262K string allocs eliminated for a K=7 / 1024-symbol frame).
 
 #include "viterbi.h"
 
@@ -9,23 +13,8 @@
 #include <cassert>
 #include <iostream>
 #include <limits>
-#include <string>
 #include <utility>
 #include <vector>
-
-namespace {
-
-int HammingDistance(const std::string& x, const std::string& y)
-{
-    assert(x.size() == y.size());
-    int distance = 0;
-    for (int i = 0; i < (int)x.size(); i++) {
-        distance += x[i] != y[i];
-    }
-    return distance;
-}
-
-} // namespace
 
 std::ostream& operator<<(std::ostream& os, const ViterbiCodec& codec)
 {
@@ -54,6 +43,7 @@ ViterbiCodec::ViterbiCodec(int constraint, const std::vector<int>& polynomials)
     : constraint_(constraint), polynomials_(polynomials)
 {
     assert(!polynomials_.empty());
+    assert(num_parity_bits() <= 32);  // must fit in uint32_t
     for (int i = 0; i < (int)polynomials_.size(); i++) {
         assert(polynomials_[i] > 0);
         assert(polynomials_[i] < (1 << constraint_));
@@ -68,28 +58,34 @@ int ViterbiCodec::NextState(int current_state, int input) const
     return (current_state >> 1) | (input << (constraint_ - 2));
 }
 
-std::string ViterbiCodec::Output(int current_state, int input) const
+uint32_t ViterbiCodec::Output(int current_state, int input) const
 {
-    return outputs_.at(current_state | (input << (constraint_ - 1)));
+    return outputs_[current_state | (input << (constraint_ - 1))];
 }
 
-std::string ViterbiCodec::Encode(const std::string& bits) const
+std::vector<uint8_t> ViterbiCodec::Encode(const uint8_t* bits, size_t len) const
 {
-    std::string encoded;
+    const int npb = num_parity_bits();
+    std::vector<uint8_t> encoded;
+    encoded.reserve((len + constraint_ - 1) * npb);
     int state = 0;
 
-    // Encode the message bits.
-    for (int i = 0; i < (int)bits.size(); i++) {
-        char c = bits[i];
-        assert(c == '0' || c == '1');
-        int input = c - '0';
-        encoded += Output(state, input);
-        state = NextState(state, input);
+    // Encode message bits.
+    for (size_t i = 0; i < len; i++) {
+        assert(bits[i] <= 1);
+        uint32_t out = Output(state, bits[i]);
+        for (int j = 0; j < npb; j++) {
+            encoded.push_back(static_cast<uint8_t>((out >> j) & 1));
+        }
+        state = NextState(state, bits[i]);
     }
 
-    // Encode (constaint_ - 1) flushing bits.
+    // Encode (constraint_ - 1) flushing bits.
     for (int i = 0; i < constraint_ - 1; i++) {
-        encoded += Output(state, 0);
+        uint32_t out = Output(state, 0);
+        for (int j = 0; j < npb; j++) {
+            encoded.push_back(static_cast<uint8_t>((out >> j) & 1));
+        }
         state = NextState(state, 0);
     }
 
@@ -98,8 +94,9 @@ std::string ViterbiCodec::Encode(const std::string& bits) const
 
 void ViterbiCodec::InitializeOutputs()
 {
-    outputs_.resize(1 << constraint_);
+    outputs_.resize(1 << constraint_, 0);
     for (int i = 0; i < (int)outputs_.size(); i++) {
+        uint32_t packed = 0;
         for (int j = 0; j < num_parity_bits(); j++) {
             // Reverse polynomial bits to make the convolution code simpler.
             int polynomial = ReverseBits(constraint_, polynomials_[j]);
@@ -110,23 +107,22 @@ void ViterbiCodec::InitializeOutputs()
                 polynomial >>= 1;
                 input >>= 1;
             }
-            outputs_[i] += output ? "1" : "0";
+            packed |= (static_cast<uint32_t>(output) << j);
         }
+        outputs_[i] = packed;
     }
 }
 
-int ViterbiCodec::BranchMetric(const std::string& bits,
+int ViterbiCodec::BranchMetric(uint32_t bits,
                                int source_state,
                                int target_state) const
 {
-    assert(bits.size() == num_parity_bits());
     assert((target_state & ((1 << (constraint_ - 2)) - 1)) == source_state >> 1);
-    const std::string output = Output(source_state, target_state >> (constraint_ - 2));
-
-    return HammingDistance(bits, output);
+    uint32_t output = Output(source_state, target_state >> (constraint_ - 2));
+    return __builtin_popcount(bits ^ output);
 }
 
-std::pair<int, int> ViterbiCodec::PathMetric(const std::string& bits,
+std::pair<int, int> ViterbiCodec::PathMetric(uint32_t bits,
                                              const std::vector<int>& prev_path_metrics,
                                              int state) const
 {
@@ -150,7 +146,7 @@ std::pair<int, int> ViterbiCodec::PathMetric(const std::string& bits,
     }
 }
 
-void ViterbiCodec::UpdatePathMetrics(const std::string& bits,
+void ViterbiCodec::UpdatePathMetrics(uint32_t bits,
                                      std::vector<int>* path_metrics,
                                      Trellis* trellis) const
 {
@@ -166,36 +162,43 @@ void ViterbiCodec::UpdatePathMetrics(const std::string& bits,
     trellis->push_back(std::move(new_trellis_column));
 }
 
-std::string ViterbiCodec::Decode(const std::string& bits) const
+std::vector<uint8_t> ViterbiCodec::Decode(const uint8_t* bits, size_t len) const
 {
+    const int npb = num_parity_bits();
+
     // Compute path metrics and generate trellis.
     Trellis trellis;
-    trellis.reserve(bits.size() / num_parity_bits());
+    trellis.reserve(len / npb);
     std::vector<int> path_metrics(1 << (constraint_ - 1),
                                   std::numeric_limits<int>::max());
     path_metrics.front() = 0;
-    for (int i = 0; i < (int)bits.size(); i += num_parity_bits()) {
-        std::string current_bits(bits, i, num_parity_bits());
-        // If some bits are missing, fill with trailing zeros.
-        // This is not ideal but it is the best we can do.
-        if ((int)current_bits.size() < num_parity_bits()) {
-            current_bits.append(
-                std::string(num_parity_bits() - current_bits.size(), '0'));
+
+    for (size_t i = 0; i < len; i += npb) {
+        // Pack num_parity_bits() input bits into a uint32_t.
+        uint32_t packed = 0;
+        int available = std::min(npb, static_cast<int>(len - i));
+        for (int j = 0; j < available; j++) {
+            packed |= (static_cast<uint32_t>(bits[i + j]) << j);
         }
-        UpdatePathMetrics(current_bits, &path_metrics, &trellis);
+        // Missing bits remain zero (trailing zero fill).
+        UpdatePathMetrics(packed, &path_metrics, &trellis);
     }
 
     // Traceback.
-    std::string decoded;
+    std::vector<uint8_t> decoded;
     decoded.reserve(trellis.size());
     int state =
         std::min_element(path_metrics.begin(), path_metrics.end()) - path_metrics.begin();
     for (int i = trellis.size() - 1; i >= 0; i--) {
-        decoded.push_back(state >> (constraint_ - 2) ? '1' : '0');
+        decoded.push_back(static_cast<uint8_t>(state >> (constraint_ - 2) ? 1 : 0));
         state = trellis[i][state];
     }
     std::reverse(decoded.begin(), decoded.end());
 
     // Remove (constraint_ - 1) flushing bits.
-    return decoded.substr(0, decoded.size() - constraint_ + 1);
+    if ((int)decoded.size() > constraint_ - 1) {
+        decoded.resize(decoded.size() - constraint_ + 1);
+    }
+
+    return decoded;
 }

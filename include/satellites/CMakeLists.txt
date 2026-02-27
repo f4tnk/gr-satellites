@@ -38,6 +38,7 @@ install(FILES
     fixedlen_to_pdu.h
     frame_counter.h
     hdlc_deframer.h
+    kiss_to_pdu.h
     kurtosis.h
     level_to_message.h
     lilacsat1_demux.h

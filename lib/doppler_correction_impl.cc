@@ -182,9 +182,8 @@ int doppler_correction_impl::work(int noutput_items,
     // --- Pass 2: VOLK vectorized NCO (sincos + complex multiply) ---
     volk_32f_cos_32f(d_cos_buf.data(), d_phase_buf.data(), noutput_items);
     volk_32f_sin_32f(d_sin_buf.data(), d_phase_buf.data(), noutput_items);
-    for (int j = 0; j < noutput_items; ++j) {
-        d_nco_buf[j] = { d_cos_buf[j], d_sin_buf[j] };
-    }
+    // F4TNK: VOLK vectorized interleave (AVX2: 4-8 pairs/cycle vs scalar)
+    volk_32f_x2_interleave_32fc(d_nco_buf.data(), d_cos_buf.data(), d_sin_buf.data(), noutput_items);
     volk_32fc_x2_multiply_32fc(out, in, d_nco_buf.data(), noutput_items);
 
     d_current_freq = freq;
