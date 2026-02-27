@@ -62,8 +62,6 @@ crc_check_impl::crc_check_impl(unsigned num_bits,
       d_port_ok(pmt::intern("ok")),
       d_port_fail(pmt::intern("fail")),
       d_port_in(pmt::intern("in")),
-      // F4TNK: CRC with IV=0, FX=0 for syndrome computation
-      d_crc_zero(crc(num_bits, poly, 0, 0, input_reflected, result_reflected)),
       d_crc_mask((num_bits < 64) ? ((1ULL << num_bits) - 1) : ~0ULL),
       d_input_reflected(input_reflected)
 {

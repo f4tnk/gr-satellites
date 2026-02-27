@@ -32,11 +32,6 @@ private:
     const pmt::pmt_t d_port_fail;
     const pmt::pmt_t d_port_in;
 
-    // F4TNK: CRC with IV=0, FX=0 for computing per-bit syndromes.
-    // syndrome = CRC_0(error_pattern) = CRC(corrupted) ^ CRC(original)
-    // Used for O(n) syndrome-based 1-bit error correction (vs O(n²) brute force).
-    crc d_crc_zero;
-
     // F4TNK: Reflected polynomial for LFSR walk syndrome computation.
     // For reflected CRC: reflected_poly = bit_reverse(poly, num_bits)
     // For non-reflected CRC: d_lfsr_poly = poly
