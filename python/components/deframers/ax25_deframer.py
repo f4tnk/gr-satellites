@@ -17,8 +17,26 @@ import pmt
 class ax25_header_check(gr.basic_block):
     """
     Checks that the header of an AX.25 frame looks valid to reduce false positives.
-    Checks that the Extension bits (LSB) of the first 13 bytes are 0.
+
+    Validation layers:
+      1. Extension bits (LSB) of bytes 0-12 must be 0.
+      2. F4TNK Session 16: Callsign character validation — bytes 0-5 (dest)
+         and 7-12 (src) must contain valid shifted AX.25 callsign characters.
+         AX.25 spec §3.12: uppercase A-Z, digits 0-9, space (shifted left by 1).
+         This reduces false-positive probability from noise by ~6 orders of
+         magnitude vs. extension-bit-only check, countering the 2-bit EC
+         amplification in hdlc_deframer (which raises CRC-16 collision rate
+         to ~18% for 20-byte noise frames).
     """
+
+    # F4TNK Session 16: 256-byte lookup table for valid shifted callsign bytes.
+    # AX.25 address bytes = (ASCII char << 1). Valid chars: A-Z, 0-9, space.
+    # Pre-built at class load time — zero per-call cost.
+    _VALID_CS = bytearray(256)
+    for _c in ' 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+        _VALID_CS[ord(_c) << 1] = 1
+    del _c
+
     def __init__(self):
         gr.basic_block.__init__(self, name="ax25_header_check", in_sig=[], out_sig=[])
         self.message_port_register_in(pmt.intern('in'))
@@ -28,20 +46,25 @@ class ax25_header_check(gr.basic_block):
     def handle_msg(self, msg_pmt):
         msg = pmt.cdr(msg_pmt)
         packet = bytes(pmt.u8vector_elements(msg))
-        
-        # Valid AX.25 frames usually have Dest(7) + Source(7).
-        # The Extension Bit (LSB) should be 0 for all bytes of an address except the last one.
-        # Since Dest is followed by Source, Dest's last byte (byte 6) also has LSB=0.
-        # So bytes 0-12 should all have LSB=0.
-        if len(packet) >= 14:
-            valid = True
-            for i in range(13):
-                if (packet[i] & 0x01) != 0:
-                    valid = False
-                    break
-            
-            if valid:
-                self.message_port_pub(pmt.intern('out'), msg_pmt)
+
+        if len(packet) < 14:
+            return
+
+        # Layer 1: Extension bits — bytes 0-12 must have LSB=0
+        for i in range(13):
+            if packet[i] & 0x01:
+                return
+
+        # Layer 2 (F4TNK): Callsign character validation.
+        # Bytes 0-5 = dest callsign, 7-12 = src callsign (skip SSID bytes 6,13).
+        # Each must be (valid_char << 1) where valid_char ∈ {A-Z, 0-9, space}.
+        # Probability of random noise passing: (37/128)^12 ≈ 2.8×10⁻⁷
+        valid = self._VALID_CS
+        for i in (0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12):
+            if not valid[packet[i]]:
+                return
+
+        self.message_port_pub(pmt.intern('out'), msg_pmt)
 
 
 class ax25_deframer(gr.hier_block2):
