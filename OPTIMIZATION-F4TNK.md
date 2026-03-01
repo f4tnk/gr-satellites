@@ -161,6 +161,23 @@ Additional deep campaigns were run to stress both AX100 paths used in practice:
 These long-run results confirm the RS length-byte fallback gain while preserving
 zero observed random-output leakage in both AX100 decode families.
 
+### S18-F4. Targeted multi-bit stress on AX100 RS length-byte fallback
+
+Compact campaign focused on the AX100 RS path (`ax100_decode`) with synthetic
+length-byte corruption and mixed RS payload corruption:
+
+- `N=3000`
+- clean decode: `3000/3000` (**100.00%**)
+- length-byte 1-bit error: `600/3000` (**20.00%**)
+- length-byte 2-bit error: `1089/3000` (**36.30%**)
+- length-byte 3-bit error: `1388/3000` (**46.27%**)
+- length-byte 2-bit + RS 1-byte error: `1101/3000` (**36.70%**)
+- length-byte 3-bit + RS 1-byte error: `1389/3000` (**46.30%**)
+- random leakage: `0/2000`
+
+This confirms that the fallback remains robust in mixed-error scenarios while
+maintaining zero observed leakage on random input.
+
 **Cross-cutting impact**: enables the GCC/Clang auto-vectorizer on all scalar
 loops in the library. On a Haswell/Skylake CPU with 256-bit AVX2, byte loops
 can process 32 bytes/cycle instead of 1.
