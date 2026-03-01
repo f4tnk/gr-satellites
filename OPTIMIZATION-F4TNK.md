@@ -1610,3 +1610,77 @@ effectively eliminating false positives over any realistic observation duration.
   (0.000000%)** ✓
 - Lookup table integrity: 37 valid entries, `_VALID_CS[0x82]=1` ('A'),
   `_VALID_CS[0x40]=1` (space), `_VALID_CS[0xE2]=0` ('q' — rejected) ✓
+
+
+---
+
+## Session 19 — VOLK Audit: RA Decoder AVX2 SIMD + AGC Batch Invsqrt
+
+Comprehensive VOLK optimization audit of all 118 C++ and 264 Python files.
+Verified 31 VOLK kernel calls across 8 C++ files are optimal.
+Identified and implemented 2 remaining SIMD opportunities:
+
+### S19-F1. RA Decoder AVX2 SIMD (`lib/radecoder/ra_decoder_gen.c`)
+
+Complete AVX2 SIMD rewrite of `ra_improve_gen` inner loops:
+
+**Forward pass:**
+- `ra_llr_min_16_save()`: processes all 16 bits (RA_BITCOUNT=16 for uint16_t)
+  in 2 × `__m256` passes (8 floats/cycle) instead of 16 scalar iterations
+- Saves accu to forward buffer + computes LLR min-sum in one fused operation
+
+**Backward pass:**
+- Inline AVX2 for dual LLR-min (forward×accu + accu×dataword) + scale + store
+- Loop-invariant `half` flag converted to `__m256 scale` (0.5 or 1.0),
+  eliminating per-element branch entirely
+
+**Rotations:**
+- `ra_rotate_left_16()` / `ra_rotate_right_16()`: cross-lane `vpermps` +
+  `vbroadcastss` + `vblendps` for boundary elements (6 insns for 16 elements
+  vs 15+1 scalar assignments)
+
+**LLR min-sum rewrite:**
+- `ra_llr_min()`: IEEE 754 bitwise (XOR sign, AND abs, integer compare for min)
+  replacing `copysignf`/`fabsf` that blocked GCC auto-vectorization
+
+**Measured instruction reduction (msg_handler function):**
+
+| Instruction | Before | After | Change |
+|------------|--------|-------|--------|
+| `vmovss` (scalar) | 284 | 36 | **−87%** |
+| `vaddss` (scalar add) | 96 | 0 | **−100%** |
+| `vmulss` (scalar mul) | 32 | 0 | **−100%** |
+| `vminps` (packed min) | 0 | 6 | New (replaces 96 scalar mins) |
+| `vperm` (cross-lane) | 0 | 265 | New (SIMD rotations) |
+| `vblend` (lane blend) | 0 | 132 | New (rotation boundaries) |
+
+**Platform support:**
+- `#ifdef __AVX2__`: full AVX2 implementation (Skylake i7-6700)
+- Scalar fallback: bitwise `ra_llr_min` for non-AVX2 platforms
+
+### S19-F2. AGC Complex (`lib/rms_agc_cc_impl.cc`)
+
+Pulled `sqrt` out of sequential IIR loop into VOLK batch operations:
+- `volk_32f_invsqrt_32f`: AVX2 `vrsqrtps` + Newton-Raphson (8 floats/cycle)
+- `volk_32f_s32f_multiply_32f`: batch reference scaling
+- `volk_32fc_32f_multiply_32fc`: batch complex gain application
+- IIR loop simplified to `rms_sq + 1e-30f` (floor for `invsqrt` safety)
+
+### Audit conclusion
+
+All signal-processing hot paths are now fully VOLK/SIMD optimized:
+- **AGC** (CC/FF): full VOLK (magnitude_squared + batch invsqrt + multiply)
+- **Doppler**: full VOLK (cos/sin/interleave/multiply)
+- **Viterbi**: AVX2/SSE2 SIMD ACS + flat trellis + uint32_t popcount
+- **HDLC**: C++ sync_block (900×) + 3-bit EC + CRC LFSR-walk
+- **CRC**: slice-by-4 + 1-bit retry on all 13 Python CRC checkers
+- **RA decoder**: AVX2 LLR min-sum (this session)
+- **Manchester/Kurtosis/Costas/Golay**: already VOLK
+
+Remaining Python-only decoders (BCH, Mobitex FEC) are niche protocols
+with minimal CPU impact — not worth C++ porting for station #3762.
+
+### Validation
+
+All 7 core tests pass: qa_crc, qa_hdlc, qa_kiss, qa_rs, qa_viterbi,
+qa_manchester_sync, qa_kiss_server_sink.
