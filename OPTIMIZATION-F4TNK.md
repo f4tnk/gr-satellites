@@ -93,6 +93,54 @@ It reports:
 These results show a substantial decode gain on difficult AX.25 frames with
 no observed leakage at final AX.25 output in the dedicated noise test.
 
+---
+
+## Session 18 — AX100 RS Robustness: Length-Byte Fallback + Deep Bench
+
+Objective: improve AX100 Reed-Solomon decode robustness when the AX100 length
+byte is corrupted (this byte is not protected by RS in the current framing).
+
+### S18-F1. `ax100_decode_impl`: fallback search on length byte
+
+**File**: `lib/ax100_decode_impl.cc`
+
+Changes:
+
+- strict input-size check (`256` bytes expected for AX100 RS path),
+- primary RS decode with received length byte (fast path),
+- fallback search across plausible length values (`33..255`) when primary decode
+  fails,
+- candidate selection by minimum RS correction count (tie-breaker: closest length
+  to received value),
+- guardrail: fallback accepts only candidates with at most `8` corrected bytes.
+
+This specifically targets “length-byte corruption” failures while keeping
+false-positive risk controlled.
+
+### S18-F2. Dedicated AX100 deep benchmark
+
+**File**: `python/bench_optimizations.py`
+
+Added `bench_ax100_rs_deep()` reporting:
+
+- clean decode,
+- RS 1-byte error decode,
+- AX100 length-byte 1-bit error decode,
+- random-input leakage outputs.
+
+### Validation (measured)
+
+- baseline (before patch, synthetic AX100 RS harness):
+  - `N=500`: clean `500/500`, len-1bit `0/500`
+- after patch:
+  - `N=500`: clean `500/500`, len-1bit `88/500` (**17.6%**)
+  - `bench_ax100_rs_deep()`:
+    - clean: `300/300` (**100.0%**)
+    - RS 1-byte error: `300/300` (**100.0%**)
+    - len 1-bit error: `70/300` (**23.33%**)
+    - random leakage: `0/1000`
+- `python/qa_rs.py` ✅ (5 tests)
+
 **Cross-cutting impact**: enables the GCC/Clang auto-vectorizer on all scalar
 loops in the library. On a Haswell/Skylake CPU with 256-bit AVX2, byte loops
 can process 32 bytes/cycle instead of 1.

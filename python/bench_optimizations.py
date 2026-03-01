@@ -541,6 +541,95 @@ def bench_ax25_chain_deep():
     print()
 
 
+def bench_ax100_rs_deep():
+    """Deep benchmark for AX100 Reed-Solomon decoder robustness."""
+    from satellites import encode_rs, ax100_decode
+
+    print("=" * 70)
+    print("BENCH AX100 RS: deep robustness")
+    print("=" * 70)
+
+    rng = np.random.default_rng(20260301)
+    n_frames = 300
+
+    def encode_payload(payload):
+        enc = encode_rs(False, 1)
+        dbg = blocks.message_debug()
+        tb = gr.top_block()
+        tb.msg_connect((enc, 'out'), (dbg, 'store'))
+        enc.to_basic_block()._post(
+            pmt.intern('in'),
+            pmt.cons(pmt.PMT_NIL, pmt.init_u8vector(len(payload), payload)))
+        enc.to_basic_block()._post(
+            pmt.intern('system'),
+            pmt.cons(pmt.intern('done'), pmt.from_long(1)))
+        tb.start()
+        tb.wait()
+        return list(pmt.u8vector_elements(pmt.cdr(dbg.get_message(0))))
+
+    def decode_ax100(frame):
+        dec = ax100_decode(False)
+        dbg = blocks.message_debug()
+        tb = gr.top_block()
+        tb.msg_connect((dec, 'out'), (dbg, 'store'))
+        dec.to_basic_block()._post(
+            pmt.intern('in'),
+            pmt.cons(pmt.PMT_NIL, pmt.init_u8vector(len(frame), frame)))
+        dec.to_basic_block()._post(
+            pmt.intern('system'),
+            pmt.cons(pmt.intern('done'), pmt.from_long(1)))
+        tb.start()
+        tb.wait()
+        if dbg.num_messages() == 0:
+            return None
+        return list(pmt.u8vector_elements(pmt.cdr(dbg.get_message(0))))
+
+    t0 = time.perf_counter()
+    clean_ok = 0
+    rs1_ok = 0
+    lenflip_ok = 0
+
+    for _ in range(n_frames):
+        payload_len = int(rng.integers(32, 180))
+        payload = rng.integers(0, 256, size=payload_len, dtype=np.uint8).tolist()
+        rs_codeword = encode_payload(payload)
+
+        len_byte = payload_len + 33
+        base = [len_byte] + rs_codeword + [0] * (255 - len(rs_codeword))
+
+        out = decode_ax100(base)
+        clean_ok += (out == payload)
+
+        # 1-byte error in RS codeword region (length byte untouched)
+        rs_err = base.copy()
+        err_pos = 1 + int(rng.integers(0, len(rs_codeword)))
+        rs_err[err_pos] ^= int(1 << rng.integers(0, 8))
+        out_rs = decode_ax100(rs_err)
+        rs1_ok += (out_rs == payload)
+
+        # 1-bit error in AX100 length byte
+        len_err = base.copy()
+        len_err[0] ^= int(1 << rng.integers(0, 8))
+        out_len = decode_ax100(len_err)
+        lenflip_ok += (out_len == payload)
+
+    dt = time.perf_counter() - t0
+
+    print(f"  clean decode:      {clean_ok:4d}/{n_frames} ({100.0*clean_ok/n_frames:6.2f}%)")
+    print(f"  RS 1-byte error:   {rs1_ok:4d}/{n_frames} ({100.0*rs1_ok/n_frames:6.2f}%)")
+    print(f"  len 1-bit error:   {lenflip_ok:4d}/{n_frames} ({100.0*lenflip_ok/n_frames:6.2f}%)")
+    print(f"  runtime: {dt*1000:.1f} ms")
+
+    # Random-input leakage check
+    n_random = 1000
+    random_out = 0
+    for _ in range(n_random):
+        frame = rng.integers(0, 256, size=256, dtype=np.uint8).tolist()
+        random_out += decode_ax100(frame) is not None
+    print(f"  random leakage:    {random_out:4d}/{n_random} outputs")
+    print()
+
+
 def bench_crc_check_syndrome():
     """Benchmark F5: CRC check with syndrome-based 1-bit correction.
 
@@ -694,6 +783,7 @@ if __name__ == '__main__':
     bench_viterbi()
     bench_viterbi_standalone()
     bench_kiss_cpp_vs_python()
+    bench_ax100_rs_deep()
     bench_ax25_hdlc()
     bench_ax25_header_false_positive()
     bench_ax25_chain_deep()
