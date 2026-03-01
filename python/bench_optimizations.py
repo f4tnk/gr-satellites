@@ -314,6 +314,233 @@ def bench_ax25_hdlc():
     print()
 
 
+def bench_ax25_header_false_positive():
+    """Benchmark AX.25 header filtering: legacy vs strict parser."""
+    from satellites.components.deframers.ax25_deframer import ax25_header_check
+
+    print("=" * 70)
+    print("BENCH AX25: header false-positive filtering")
+    print("         legacy fixed-position check vs strict address parser")
+    print("=" * 70)
+
+    rng = np.random.default_rng(20260225)
+    n_noise = 200000
+    frame_len = 32
+
+    valid_cs = ax25_header_check._VALID_CS
+    valid_shifted = np.array([i for i in range(256) if valid_cs[i]], dtype=np.uint8)
+
+    def legacy_check(packet):
+        if len(packet) < 14:
+            return False
+        for i in range(13):
+            if packet[i] & 0x01:
+                return False
+        for i in (0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12):
+            if not valid_cs[packet[i]]:
+                return False
+        return True
+
+    def strict_check(packet):
+        if len(packet) < 16:
+            return False
+
+        offset = 0
+        addr_count = 0
+        max_addresses = 10
+
+        while addr_count < max_addresses:
+            if offset + 7 > len(packet):
+                return False
+
+            for i in range(6):
+                if not valid_cs[packet[offset + i]]:
+                    return False
+
+            ssid = packet[offset + 6]
+            if (ssid & 0x60) != 0x60:
+                return False
+
+            addr_count += 1
+            offset += 7
+
+            if ssid & 0x01:
+                break
+        else:
+            return False
+
+        if addr_count < 2:
+            return False
+        if offset + 2 > len(packet):
+            return False
+
+        return True
+
+    # Noise conditioned to pass legacy checks (worst case for false positives).
+    conditioned = np.empty((n_noise, frame_len), dtype=np.uint8)
+    conditioned[:, :] = rng.integers(0, 256, size=(n_noise, frame_len), dtype=np.uint8)
+    conditioned[:, 0:6] = rng.choice(valid_shifted, size=(n_noise, 6), replace=True)
+    conditioned[:, 7:13] = rng.choice(valid_shifted, size=(n_noise, 6), replace=True)
+    conditioned[:, 6] &= 0xFE  # force LSB=0 to satisfy legacy extension-bit check
+
+    t0 = time.perf_counter()
+    legacy_pass = 0
+    strict_pass = 0
+    for row in conditioned:
+        pkt = bytes(row)
+        if legacy_check(pkt):
+            legacy_pass += 1
+        if strict_check(pkt):
+            strict_pass += 1
+    elapsed_noise = time.perf_counter() - t0
+
+    # Valid frames sanity checks: 2-address and 3-address (digipeater) forms.
+    def cs_bytes(callsign):
+        txt = callsign.ljust(6)[:6]
+        return [(ord(ch) << 1) & 0xFE for ch in txt]
+
+    valid_2addr = bytes(
+        cs_bytes('CQ') + [0x60] +
+        cs_bytes('F4TNK') + [0x61] +
+        [0x03, 0xF0, 0x01, 0x02, 0x03]
+    )
+    valid_3addr = bytes(
+        cs_bytes('CQ') + [0x60] +
+        cs_bytes('F4TNK') + [0x60] +
+        cs_bytes('WIDE1') + [0x61] +
+        [0x03, 0xF0, 0x42]
+    )
+
+    print(f"  conditioned noise frames: {n_noise}")
+    print(f"  legacy pass: {legacy_pass:7d} ({100.0 * legacy_pass / n_noise:6.3f}%)")
+    print(f"  strict pass: {strict_pass:7d} ({100.0 * strict_pass / n_noise:6.3f}%)")
+    if strict_pass > 0:
+        suppression = legacy_pass / strict_pass
+        print(f"  suppression factor: {suppression:,.1f}x")
+    else:
+        print("  suppression factor: infinite (strict accepted 0 conditioned-noise frames)")
+    print(f"  runtime: {elapsed_noise*1000:.1f} ms")
+
+    print("  valid frame sanity:")
+    print(f"    2-address frame: legacy={legacy_check(valid_2addr)} strict={strict_check(valid_2addr)}")
+    print(f"    3-address frame: legacy={legacy_check(valid_3addr)} strict={strict_check(valid_3addr)}")
+    print()
+
+
+def bench_ax25_chain_deep():
+    """Deep AX.25 benchmark: end-to-end recovery + noise leakage."""
+    from satellites import hdlc_deframer, crc, pdu_length_filter
+    from satellites.components.deframers.ax25_deframer import ax25_header_check
+
+    hdlc_factory = hdlc_deframer if callable(hdlc_deframer) else hdlc_deframer.hdlc_deframer
+
+    print("=" * 70)
+    print("BENCH AX25: deep end-to-end recovery/noise")
+    print("=" * 70)
+
+    def _build_bits(payload, crc_calc):
+        flag = [0, 1, 1, 1, 1, 1, 1, 0]
+        data = list(payload)
+        c = crc_calc.compute(data)
+        data += [c & 0xFF, (c >> 8) & 0xFF]
+
+        bits = flag * 4
+        start = len(bits)
+        ones = 0
+        for byte in data:
+            for _ in range(8):
+                bit = byte & 1
+                bits.append(bit)
+                if bit:
+                    ones += 1
+                else:
+                    ones = 0
+                if ones == 5:
+                    bits.append(0)
+                    ones = 0
+                byte >>= 1
+        end = len(bits)
+        bits += flag * 2
+        return bits, start, end
+
+    def _run_recovery(bits_per_frame):
+        rng = np.random.default_rng(991)
+        n_frames = 2000
+        frame_len = 96
+        crc_calc = crc(16, 0x1021, 0xFFFF, 0xFFFF, True, True)
+
+        stream = []
+        ranges = []
+        cursor = 0
+        valid = [ord(c) << 1 for c in ' 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ']
+
+        for _ in range(n_frames):
+            frame = rng.integers(0, 256, size=frame_len, dtype=np.uint8)
+            frame[0:6] = rng.choice(valid, size=6)
+            frame[6] = 0x60
+            frame[7:13] = rng.choice(valid, size=6)
+            frame[13] = 0x61
+            frame[14] = 0x03
+            frame[15] = 0xF0
+
+            bits, start, end = _build_bits(frame.tolist(), crc_calc)
+            stream.extend(bits)
+            ranges.append((cursor + start, cursor + end))
+            cursor += len(bits)
+
+        stream = np.array(stream, dtype=np.uint8)
+        corrupted = stream.copy()
+        for start, end in ranges:
+            idx = rng.choice(np.arange(start, end), size=bits_per_frame, replace=False)
+            corrupted[idx] ^= 1
+
+        src = blocks.vector_source_b(corrupted.tolist(), repeat=False)
+        defr = hdlc_factory(True, 10000)
+        lengthf = pdu_length_filter(16, 10000)
+        header = ax25_header_check()
+        dbg = blocks.message_debug()
+
+        tb = gr.top_block()
+        tb.connect(src, defr)
+        tb.msg_connect((defr, 'out'), (lengthf, 'in'))
+        tb.msg_connect((lengthf, 'out'), (header, 'in'))
+        tb.msg_connect((header, 'out'), (dbg, 'store'))
+
+        t0 = time.perf_counter()
+        tb.start()
+        tb.wait()
+        elapsed = time.perf_counter() - t0
+
+        recovered = dbg.num_messages()
+        print(f"  {bits_per_frame}-bit/frame: {recovered:4d}/{n_frames} "
+              f"({100.0*recovered/n_frames:6.2f}%)  {elapsed*1000:7.1f} ms")
+
+    _run_recovery(1)
+    _run_recovery(3)
+
+    # Noise leakage test (end-to-end AX.25 output should be 0 in practice).
+    rng = np.random.default_rng(123)
+    noise_bits = 2_500_000
+    noise = rng.integers(0, 2, size=noise_bits, dtype=np.uint8)
+
+    src = blocks.vector_source_b(noise.tolist(), repeat=False)
+    defr = hdlc_factory(True, 10000)
+    lengthf = pdu_length_filter(16, 10000)
+    header = ax25_header_check()
+    dbg = blocks.message_debug()
+
+    tb = gr.top_block()
+    tb.connect(src, defr)
+    tb.msg_connect((defr, 'out'), (lengthf, 'in'))
+    tb.msg_connect((lengthf, 'out'), (header, 'in'))
+    tb.msg_connect((header, 'out'), (dbg, 'store'))
+
+    tb.start()
+    tb.wait()
+    print(f"  noise-only: {noise_bits:,d} bits -> {dbg.num_messages()} AX.25 frames")
+    print()
+
+
 def bench_crc_check_syndrome():
     """Benchmark F5: CRC check with syndrome-based 1-bit correction.
 
@@ -468,6 +695,8 @@ if __name__ == '__main__':
     bench_viterbi_standalone()
     bench_kiss_cpp_vs_python()
     bench_ax25_hdlc()
+    bench_ax25_header_false_positive()
+    bench_ax25_chain_deep()
     bench_crc_check_syndrome()
     bench_doppler()
 

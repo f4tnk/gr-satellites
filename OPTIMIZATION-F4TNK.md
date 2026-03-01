@@ -35,6 +35,64 @@ if(NOT MSVC)
 endif()
 ```
 
+---
+
+## Session 17 — AX.25 Deep Decode (3-bit EC) with False-Positive Guardrails
+
+Objective: improve AX.25 recovery on harsher frames (3 bit errors) while keeping
+the final AX.25 output path clean (no additional false positives).
+
+### S17-F1. `hdlc_deframer_impl`: bounded 3-bit fallback, AX.25-gated
+
+**File**: `lib/hdlc_deframer_impl.cc`
+
+Added a third correction stage after existing 1-bit and 2-bit syndrome passes:
+
+1. Build syndrome table as before.
+2. For each pair `(p1, p2)`, compute needed syndrome for `p3`:
+   `syn[p3] = target ^ syn[p1] ^ syn[p2]`.
+3. Try 3-bit correction candidate and verify with full CRC.
+4. Accept only if candidate also passes a strict AX.25 plausibility check.
+
+Guardrails added specifically to control false positives:
+
+- 3-bit stage only for `nbytes >= 40` and bounded bit-length (`nbits <= 2048`)
+- payload-only flips (no FCS-bit flipping in 3-bit pass)
+- strict AX.25 plausibility for acceptance:
+  - valid shifted callsign bytes,
+  - non-empty callsigns (not all spaces),
+  - SSID reserved bits (5-6) set,
+  - 2 to 3 addresses,
+  - UI frame control (`0x03`) and PID (`0xF0`).
+
+### S17-F2. Deep AX.25 benchmark added
+
+**File**: `python/bench_optimizations.py`
+
+Added `bench_ax25_chain_deep()` (end-to-end chain):
+
+`hdlc_deframer(True,10000) -> pdu_length_filter(16,10000) -> ax25_header_check`
+
+It reports:
+
+- 1-bit/frame recovery rate
+- 3-bit/frame recovery rate
+- noise-only leakage count at final AX.25 output
+
+### Validation (measured)
+
+- `python/qa_hdlc.py` ✅
+- `bench_ax25_chain_deep()`:
+  - **1-bit/frame**: `1963/2000` (**98.15%**)
+  - **3-bit/frame**: `1837/2000` (**91.85%**)
+  - **noise-only**: `2,500,000` bits → **0 AX.25 frames**
+- extended noise-only validation (end-to-end chain):
+  - `20,000,000` bits → **0 AX.25 frames** (`4.478 s`)
+  - `50,000,000` bits → **0 AX.25 frames** (`10.870 s`)
+
+These results show a substantial decode gain on difficult AX.25 frames with
+no observed leakage at final AX.25 output in the dedicated noise test.
+
 **Cross-cutting impact**: enables the GCC/Clang auto-vectorizer on all scalar
 loops in the library. On a Haswell/Skylake CPU with 256-bit AVX2, byte loops
 can process 32 bytes/cycle instead of 1.

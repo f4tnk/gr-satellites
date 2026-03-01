@@ -16,9 +16,78 @@
 #include "hdlc_deframer_impl.h"
 #include <gnuradio/io_signature.h>
 #include <algorithm>
+#include <array>
 
 namespace gr {
 namespace satellites {
+
+static inline bool is_valid_ax25_callsign_byte(uint8_t value)
+{
+    static const auto valid = [] {
+        std::array<uint8_t, 256> table{};
+        const char* chars = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        for (const char* p = chars; *p != '\0'; ++p) {
+            table[(uint8_t)(*p << 1)] = 1;
+        }
+        return table;
+    }();
+    return valid[value] != 0;
+}
+
+static inline bool looks_like_ax25_header(const uint8_t* payload, size_t len)
+{
+    if (len < 16)
+        return false;
+
+    size_t offset = 0;
+    size_t addr_count = 0;
+    constexpr size_t max_addresses = 10;
+
+    while (addr_count < max_addresses) {
+        if (offset + 7 > len)
+            return false;
+
+        bool has_non_space = false;
+        for (size_t i = 0; i < 6; i++) {
+            const uint8_t v = payload[offset + i];
+            if (!is_valid_ax25_callsign_byte(v))
+                return false;
+            if (v != 0x40u)
+                has_non_space = true;
+        }
+
+        if (!has_non_space)
+            return false;
+
+        const uint8_t ssid = payload[offset + 6];
+        if ((ssid & 0x60u) != 0x60u)
+            return false;
+
+        addr_count++;
+        offset += 7;
+
+        if (ssid & 0x01u)
+            break;
+    }
+
+    if (addr_count < 2)
+        return false;
+
+    if (addr_count > 3)
+        return false;
+
+    if (offset + 2 > len) // control + PID must exist
+        return false;
+
+    // For 3-bit EC acceptance, require AX.25 UI-frame control field.
+    if (payload[offset] != 0x03u)
+        return false;
+
+    if (payload[offset + 1] != 0xF0u)
+        return false;
+
+    return true;
+}
 
 hdlc_deframer::sptr hdlc_deframer::make(bool check_fcs, int max_length)
 {
@@ -199,11 +268,14 @@ void hdlc_deframer_impl::process_frame()
                     }
                 }
 
+                bool syn_index_built = false;
+
                 // --- Pass 2: 2-bit error correction ---
                 // For 2 errors at positions p1,p2: syn[p1] ^ syn[p2] = target
                 // ⟹ syn[p2] = target ^ syn[p1].
                 // Uses direct 16-bit syndrome index table for O(1) lookup without hash.
                 if (!send && nbits <= 16000) {
+                    syn_index_built = true;
                     d_syn_index_touched.clear();
                     if (d_syn_index_touched.capacity() < nbits) {
                         d_syn_index_touched.reserve(nbits);
@@ -235,9 +307,59 @@ void hdlc_deframer_impl::process_frame()
                         }
                     }
 
-                    // Reset only touched entries.
-                    for (uint16_t syn : d_syn_index_touched) {
-                        d_syn_index[syn] = -1;
+                    // --- Pass 3 (AX.25-focused): bounded 3-bit correction ---
+                    // Enabled only on short/medium frames to control CPU,
+                    // and only accepted if BOTH CRC and AX.25 header checks pass.
+                    if (!send && nbits <= 2048 && nbytes >= 40) {
+                        for (size_t p1 = 0; p1 < nbits && !send; p1++) {
+                            for (size_t p2 = p1 + 1; p2 < nbits && !send; p2++) {
+                                const uint16_t needed =
+                                    target ^ d_bits_ec[p1].syndrome ^ d_bits_ec[p2].syndrome;
+                                if (needed == 0)
+                                    continue;
+
+                                const int32_t p3i = d_syn_index[needed];
+                                if (p3i < 0)
+                                    continue;
+
+                                const size_t p3 = (size_t)p3i;
+                                if (p3 == p1 || p3 == p2)
+                                    continue;
+
+                                if (d_bits_ec[p1].byte_idx >= (int)(nbytes - 2) ||
+                                    d_bits_ec[p2].byte_idx >= (int)(nbytes - 2) ||
+                                    d_bits_ec[p3].byte_idx >= (int)(nbytes - 2))
+                                    continue;
+
+                                d_pktbuf[d_bits_ec[p1].byte_idx] ^=
+                                    (uint8_t)(1u << d_bits_ec[p1].bit_idx);
+                                d_pktbuf[d_bits_ec[p2].byte_idx] ^=
+                                    (uint8_t)(1u << d_bits_ec[p2].bit_idx);
+                                d_pktbuf[d_bits_ec[p3].byte_idx] ^=
+                                    (uint8_t)(1u << d_bits_ec[p3].bit_idx);
+
+                                if (fcs_ok(d_pktbuf.data(), nbytes) &&
+                                    looks_like_ax25_header(d_pktbuf.data(), nbytes - 2)) {
+                                    send = true;
+                                }
+
+                                if (!send) {
+                                    d_pktbuf[d_bits_ec[p1].byte_idx] ^=
+                                        (uint8_t)(1u << d_bits_ec[p1].bit_idx);
+                                    d_pktbuf[d_bits_ec[p2].byte_idx] ^=
+                                        (uint8_t)(1u << d_bits_ec[p2].bit_idx);
+                                    d_pktbuf[d_bits_ec[p3].byte_idx] ^=
+                                        (uint8_t)(1u << d_bits_ec[p3].bit_idx);
+                                }
+                            }
+                        }
+                    }
+
+                    if (syn_index_built) {
+                        // Reset only touched entries.
+                        for (uint16_t syn : d_syn_index_touched) {
+                            d_syn_index[syn] = -1;
+                        }
                     }
                 }
             }
