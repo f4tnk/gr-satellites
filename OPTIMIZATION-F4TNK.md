@@ -141,6 +141,26 @@ Added `bench_ax100_rs_deep()` reporting:
     - random leakage: `0/1000`
 - `python/qa_rs.py` ✅ (5 tests)
 
+### S18-F3. Extended long-run validation (mode6-like + mode5-like)
+
+Additional deep campaigns were run to stress both AX100 paths used in practice:
+
+- **AX100 RS (mode6-like path, `ax100_decode`)**:
+  - `N=10000`
+  - clean decode: `10000/10000` (**100.00%**)
+  - RS 1-byte error: `10000/10000` (**100.00%**)
+  - length-byte 1-bit error: `1971/10000` (**19.71%**)
+  - random leakage: `0/5000`
+
+- **AX100 ASM+Golay (mode5-like path, `u482c_decode`)**:
+  - `N=10000`
+  - clean decode: `10000/10000` (**100.00%**)
+  - 1-byte error decode: `10000/10000` (**100.00%**)
+  - random leakage: `0/3000`
+
+These long-run results confirm the RS length-byte fallback gain while preserving
+zero observed random-output leakage in both AX100 decode families.
+
 **Cross-cutting impact**: enables the GCC/Clang auto-vectorizer on all scalar
 loops in the library. On a Haswell/Skylake CPU with 256-bit AVX2, byte loops
 can process 32 bytes/cycle instead of 1.
