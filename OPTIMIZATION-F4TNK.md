@@ -1684,3 +1684,43 @@ with minimal CPU impact — not worth C++ porting for station #3762.
 
 All 7 core tests pass: qa_crc, qa_hdlc, qa_kiss, qa_rs, qa_viterbi,
 qa_manchester_sync, qa_kiss_server_sink.
+
+---
+
+## Session 20 — SatYAML NORAD Index: O(n) → O(1) Satellite Lookup
+
+**Date**: 2026-03-11 — Commit `3503ebaf`
+
+### Problem
+
+`search_norad()` in `satyaml.py` performed a linear scan of every `.yml` file, calling `yaml.safe_load()` on each one until the matching NORAD ID was found. After `generate_all_satyamls.py` expanded the satyaml volume from 411 to **1043 files**, this became the dominant startup bottleneck.
+
+`gr_satellites_flowgraph` calls `search_norad()` **twice** at startup:
+1. `add_options()` — to set up the argparse transmitter options
+2. `__init__()` — to load the satellite definition
+
+With 1043 files × full YAML parse × 2 calls = **~3.6s** of pure YAML parsing overhead before any GNU Radio block is even created. This explained the 3.0s UDP socket wait observed in production.
+
+### Solution
+
+Added a lazy NORAD→filepath index to `SatYAML`:
+- `_build_norad_index()` scans all `.yml` files on first `search_norad()` call, reading only the `norad:` line in plain text (no `yaml.safe_load()`)
+- Index stored in `self._norad_index` dict — subsequent lookups are O(1)
+- Only the matched file gets `yaml.safe_load()` (once per lookup)
+
+### Benchmarks (411 YAML files, WSL2 i7-6700)
+
+| Method | Time |
+|:---|:---|
+| Old: `search_norad()` worst case (full scan) | 723ms |
+| Old: 2 calls per startup | 1446ms |
+| **New: index build + 2 lookups** | **25ms** |
+| **Speedup** | **~59×** |
+
+Extrapolated for 1043 files in production: old ~3.6s → new ~62ms.
+
+### Files modified
+
+| File | Change |
+|:---|:---|
+| `python/satyaml/satyaml.py` | Added `_norad_index`, `_build_norad_index()`, rewritten `search_norad()` |
