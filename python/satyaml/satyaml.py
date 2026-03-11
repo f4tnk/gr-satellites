@@ -24,6 +24,7 @@ _default_path = pathlib.Path(__file__).parent
 class SatYAML:
     def __init__(self, path=_default_path):
         self._path = pathlib.Path(path)
+        self._norad_index = None  # lazy NORAD→file index
     modulations = [
         'AFSK', 'FSK', 'BPSK', 'BPSK Manchester', 'DBPSK',
         'DBPSK Manchester', 'FSK subaudio',
@@ -231,10 +232,33 @@ class SatYAML:
                 return self.get_yamldata(yml)
         raise ValueError('satellite not found')
 
-    def search_norad(self, norad):
+    def _build_norad_index(self):
+        """Build a NORAD→filepath dict by extracting only the norad field
+        from each YAML file.  Called once on first search_norad(); makes
+        subsequent lookups O(1) instead of scanning all files."""
+        idx = {}
         for yml in self.yaml_files():
-            if norad == self._get_satnorad(yml):
-                return self.get_yamldata(yml)
+            try:
+                with open(yml, encoding='utf-8') as f:
+                    for line in f:
+                        stripped = line.lstrip()
+                        if stripped.startswith('norad:'):
+                            norad_val = stripped.split(':', 1)[1].strip()
+                            try:
+                                idx[int(norad_val)] = yml
+                            except ValueError:
+                                pass
+                            break
+            except OSError:
+                continue
+        self._norad_index = idx
+
+    def search_norad(self, norad):
+        if self._norad_index is None:
+            self._build_norad_index()
+        yml = self._norad_index.get(norad)
+        if yml is not None:
+            return self.get_yamldata(yml)
         raise ValueError('satellite not found')
 
     def open_satyaml(self, file=None, name=None, norad=None):
