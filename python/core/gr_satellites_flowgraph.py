@@ -166,7 +166,9 @@ class gr_satellites_flowgraph(gr.hier_block2):
             transmitters = satyaml['transmitters']
             filter_baud = getattr(self.options, 'filter_baudrate', None)
             filter_mod = getattr(self.options, 'filter_modulation', None)
-            if (filter_baud is not None or filter_mod is not None) \
+            filter_freq = getattr(self.options, 'filter_downlink_freq', None)
+            if (filter_baud is not None or filter_mod is not None
+                    or filter_freq is not None) \
                     and not pdu_in:
                 matched = {}
                 for k, v in transmitters.items():
@@ -176,14 +178,18 @@ class gr_satellites_flowgraph(gr.hier_block2):
                               or self._modulation_family(
                                   v.get('modulation', ''))
                               == self._modulation_family(filter_mod))
-                    if baud_ok and mod_ok:
+                    freq_ok = (filter_freq is None
+                               or abs(v.get('frequency', 0) - filter_freq)
+                               < 500e3)
+                    if baud_ok and mod_ok and freq_ok:
                         matched[k] = v
                 if matched:
                     if len(matched) < len(transmitters):
                         skipped = set(transmitters) - set(matched)
                         print(f'gr_satellites: TX filter '
                               f'baudrate={filter_baud} '
-                              f'modulation={filter_mod}: '
+                              f'modulation={filter_mod} '
+                              f'downlink_freq={filter_freq}: '
                               f'keeping {list(matched.keys())}, '
                               f'skipping {list(skipped)}',
                               file=sys.stderr)
@@ -192,6 +198,7 @@ class gr_satellites_flowgraph(gr.hier_block2):
                     print(f'gr_satellites: TX filter '
                           f'baudrate={filter_baud} '
                           f'modulation={filter_mod} '
+                          f'downlink_freq={filter_freq} '
                           f'matched nothing, using all '
                           f'{len(transmitters)}',
                           file=sys.stderr)

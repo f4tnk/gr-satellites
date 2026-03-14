@@ -146,6 +146,11 @@ def argument_parser():
         help='Only instantiate transmitter chains matching this '
              'modulation family: FSK, BPSK, AFSK '
              '(e.g. FSK also matches FSK subaudio)')
+    p_filter.add_argument(
+        '--downlink_freq', type=float, default=None, dest='filter_downlink_freq',
+        help='Only instantiate transmitter chains whose downlink frequency '
+             'is within 500 kHz of this value (in Hz). '
+             'Useful for multi-band satellites (e.g. UHF + S-band)')
     return p
 
 
