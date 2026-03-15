@@ -10,7 +10,7 @@
 
 from gnuradio import gr, blocks
 
-from ... import pdu_to_kiss
+from ... import pdu_to_kiss, try_strip_crc32c
 # F4TNK: Use grpdu wrapper for GNU Radio 3.10+/3.11 PDU compatibility
 from ...grpdu import pdu_to_tagged_stream
 from ...utils.options_block import options_block
@@ -42,13 +42,18 @@ class kiss_file_sink(gr.hier_block2, options_block):
 
         initial_timestamp = getattr(self.options, 'start_time', '')
 
+        # F4TNK: Strip trailing CRC-32C (4 bytes) after verification,
+        # matching satnogs_crc_async behavior in the SatNOGS flowgraph.
+        # Non-CRC frames (AX.25, etc.) pass through unchanged.
+        self.crc_strip = try_strip_crc32c()
         self.kiss = pdu_to_kiss(include_timestamp=True,
                                 initial_timestamp=initial_timestamp)
         self.pdu2tag = pdu_to_tagged_stream(byte_t, 'packet_len')
         self.filesink = blocks.file_sink(gr.sizeof_char, file, append)
 
         self.connect(self.pdu2tag, self.filesink)
-        self.msg_connect((self, 'in'), (self.kiss, 'in'))
+        self.msg_connect((self, 'in'), (self.crc_strip, 'in'))
+        self.msg_connect((self.crc_strip, 'out'), (self.kiss, 'in'))
         self.msg_connect((self.kiss, 'out'), (self.pdu2tag, 'pdus'))
 
     @classmethod

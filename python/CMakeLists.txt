@@ -99,6 +99,7 @@ GR_PYTHON_INSTALL(
     swiatowid_packet_split.py
     sx12xx_check_crc.py
     sx12xx_packet_crop.py
+    try_strip_crc32c.py
     DESTINATION ${GR_PYTHON_DIR}/satellites
 )
 
