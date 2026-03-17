@@ -34,7 +34,7 @@ class rms_agc_f(gr.hier_block2):
         self.reference = reference
 
         # Single C++ block replaces the previous 4-block chain
-        self.agc = _rms_agc_ff_block.make(float(alpha), float(reference))
+        self.agc = _rms_agc_ff_block(float(alpha), float(reference))
 
         self.connect((self, 0), self.agc, (self, 0))
 

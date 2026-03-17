@@ -40,6 +40,7 @@ from .grizu263a_deframer import grizu263a_deframer
 from .hades_deframer import hades_deframer
 from .hsu_sat1_deframer import hsu_sat1_deframer
 from .ideassat_deframer import ideassat_deframer
+from .cc11xx_deframer import cc11xx_deframer
 from .k2sat_deframer import k2sat_deframer
 from .lilacsat_1_deframer import lilacsat_1_deframer
 from .lucky7_deframer import lucky7_deframer

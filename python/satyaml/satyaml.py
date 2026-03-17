@@ -44,6 +44,7 @@ class SatYAML:
         'AO-40 FEC CRC-16-ARC short', 'DIY-1', 'BINAR-1', 'Endurosat',
         'SanoSat', 'FORESAIL-1', 'HSU-SAT1', 'GEOSCAN', 'Light-1',
         'SPINO', 'QUBIK', 'BINAR-2', 'OpenLST', 'HADES-D', 'HADES-R',
+ 'CC11xx',
         'BEESAT-1', 'BEESAT-9',
         ]
     transports = [
@@ -164,7 +165,8 @@ class SatYAML:
                         f'RS interleaving does not contain an int '
                         f'in {key} in {yml}')
                 if ('scrambler' in transmitter
-                        and transmitter['scrambler'] not in ['CCSDS', 'none']):
+                        and transmitter['scrambler'] not in [
+                            'CCSDS', 'none', 'auto', 'none_nofec']):
                     raise YAMLError(
                         f'Invalid scrambler value {transmitter["scrambler"]} '
                         f'for {key} in {yml}')

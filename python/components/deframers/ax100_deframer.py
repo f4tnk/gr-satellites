@@ -27,8 +27,11 @@ class ax100_deframer(gr.hier_block2, options_block):
 
     Args:
         mode: mode to use ('RS' or 'ASM') (string)
-        scrambler: scrambler to use, either 'CCSDS' or 'none'
-                   (only for ASM mode) (str)
+        scrambler: scrambler to use (only for ASM mode) (str)
+                   'CCSDS': force CCSDS scrambler ON + RS ON
+                   'none': scrambler OFF, RS ON (backward compat)
+                   'auto': use Golay header flags to decide
+                   'none_nofec': force all FEC OFF (scrambler + RS)
         syncword_threshold: number of bit errors allowed in syncword (int)
         syncword: syncword to use (str)
         options: Options from argparse
@@ -42,7 +45,7 @@ class ax100_deframer(gr.hier_block2, options_block):
             gr.io_signature(0, 0, 0))
         options_block.__init__(self, options)
 
-        if scrambler not in ['CCSDS', 'none']:
+        if scrambler not in ['CCSDS', 'none', 'auto', 'none_nofec']:
             raise ValueError(f'invalid scrambler {scrambler}')
 
         self.message_port_register_hier_out('out')
@@ -53,6 +56,20 @@ class ax100_deframer(gr.hier_block2, options_block):
         if mode not in ['RS', 'ASM']:
             raise Exception("Unsupported AX100 mode. Use 'RS' or 'ASM'")
 
+        # u482c_decode FEC mode values: OFF=0, ON=1, AUTO=-1
+        if scrambler == 'CCSDS':
+            scr_mode = 1   # ON
+            rs_mode = 1    # ON
+        elif scrambler == 'auto':
+            scr_mode = -1  # AUTO (use Golay flags)
+            rs_mode = -1   # AUTO (use Golay flags)
+        elif scrambler == 'none_nofec':
+            scr_mode = 0   # OFF
+            rs_mode = 0    # OFF
+        else:  # 'none'
+            scr_mode = 0   # OFF
+            rs_mode = 1    # ON (backward compatible)
+
         self.slicer = digital.binary_slicer_fb()
         if mode == 'RS':
             self.descrambler = digital.descrambler_bb(0x21, 0, 16)
@@ -62,7 +79,7 @@ class ax100_deframer(gr.hier_block2, options_block):
         self.fec = (ax100_decode(self.options.verbose_fec) if mode == 'RS'
                     else u482c_decode(
                         self.options.verbose_fec, 0,
-                        1 if scrambler == 'CCSDS' else 0, 1))
+                        scr_mode, rs_mode))
         self._blocks = [self, self.slicer]
         if mode == 'RS':
             self._blocks.append(self.descrambler)

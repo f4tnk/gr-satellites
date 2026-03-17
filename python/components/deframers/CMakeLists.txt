@@ -40,6 +40,7 @@ GR_PYTHON_INSTALL(
     astrocast_fx25_deframer.py
     ax100_deframer.py
     ax25_deframer.py
+    cc11xx_deframer.py
     ax5043_deframer.py
     binar1_deframer.py
     binar2_deframer.py

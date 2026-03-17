@@ -545,6 +545,7 @@ class gr_satellites_flowgraph(gr.hier_block2):
         'Light-1': set_options(
             deframers.reaktor_hello_world_deframer,
             syncword='light-1'),
+        'CC11xx': deframers.cc11xx_deframer,
         'SPINO': deframers.spino_deframer,
         'QUBIK': deframers.qubik_deframer,
         'OpenLST': deframers.openlst_deframer,
