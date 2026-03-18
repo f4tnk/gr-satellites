@@ -51,9 +51,20 @@ class ListSatellites(argparse.Action):
     def __print(self, yml):
         print(f"* {yml['name']} (NORAD {yml['norad']})")
         for name, data in yml['transmitters'].items():
-            print(
-                f"    {name} {data['frequency']*1e-6:.3f} MHz "
-                f"{data['modulation']} {data['framing']}")
+            # Base fields (always present)
+            parts = [
+                f"frequency={data['frequency']*1e-6:.3f}",
+                f"modulation={data['modulation']}",
+                f"baudrate={int(data['baudrate'])}",
+                f"framing={data['framing']}",
+            ]
+            # Optional fields — include only when present in SatYAML
+            for key in ('deviation', 'af_carrier', 'fm_deviation',
+                        'scrambler', 'convolutional', 'RS basis',
+                        'RS interleaving', 'precoding'):
+                if key in data:
+                    parts.append(f"{key}={data[key]}")
+            print(f"    {name} | {' | '.join(parts)}")
 
 
 def argument_parser():
