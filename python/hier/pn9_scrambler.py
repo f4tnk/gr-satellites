@@ -17,9 +17,9 @@ from gnuradio import gr
 def _generate_pn9_sequence(length):
     """Generate PN9 pseudo-random sequence (x^9 + x^5 + 1, init=0x1FF).
 
-    Standard CC11xx PN9 whitening sequence. Fibonacci LFSR, shift right,
-    taps at bit 0 and bit 5, LSB-first byte packing.
-    Reference: TI Application Note DN509, CC1101 datasheet section 15.1.
+    Matches GR digital.additive_scrambler_bb(0x21, 0x1FF, 8, bits_per_byte=8).
+    MSB-first byte packing (first LFSR output bit → MSB of byte),
+    matching fixedlen_to_pdu pack_packet() bit order.
     Returns numpy uint8 array of 'length' bytes.
     """
     lfsr = 0x1FF
@@ -27,7 +27,7 @@ def _generate_pn9_sequence(length):
     for i in range(length):
         byte_val = 0
         for bit in range(8):
-            byte_val |= ((lfsr & 1) << bit)
+            byte_val = (byte_val << 1) | (lfsr & 1)
             feedback = ((lfsr >> 0) ^ (lfsr >> 5)) & 1
             lfsr = (lfsr >> 1) | (feedback << 8)
         seq[i] = byte_val
