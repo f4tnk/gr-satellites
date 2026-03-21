@@ -57,7 +57,7 @@ class geoscan_deframer(gr.hier_block2, options_block):
         self.msg_connect((self.scrambler, 'out'), (self.crc, 'in'))
         self.msg_connect((self.crc, 'ok'), (self, 'out'))
 
-    _default_sync_threshold = 4
+    _default_sync_threshold = 2
 
     @classmethod
     def add_options(cls, parser):
