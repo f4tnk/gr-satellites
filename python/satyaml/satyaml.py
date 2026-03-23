@@ -200,7 +200,8 @@ class SatYAML:
                             f'defined in data field in {yml}')
 
     def load_all_yaml(self):
-        return [self.get_yamldata(f) for f in self.yaml_files()]
+        return [d for f in self.yaml_files()
+                if (d := self.get_yamldata(f)) is not None]
 
     def yaml_files(self):
         return self._path.glob('*.yml')
