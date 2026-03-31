@@ -1724,3 +1724,43 @@ Extrapolated for 1043 files in production: old ~3.6s → new ~62ms.
 | File | Change |
 |:---|:---|
 | `python/satyaml/satyaml.py` | Added `_norad_index`, `_build_norad_index()`, rewritten `search_norad()` |
+
+---
+
+## Session 21 — RMS AGC Float (ff) GRC Block
+
+**Date**: 2025-07
+
+### Constat
+
+Le bloc C++ `rms_agc_ff` (AGC RMS pour signaux float) existait déjà
+(`lib/rms_agc_ff_impl.cc`, VOLK optimisé) ainsi que le wrapper Python hier
+(`python/hier/rms_agc_f.py`), mais le fichier **GRC YAML block** était absent.
+Résultat : le bloc "RMS AGC (Float)" n'apparaissait pas dans GNU Radio Companion.
+
+### Solution
+
+Créé `grc/hier/satellites_rms_agc_f.py.block.yml` avec :
+- id: `satellites_rms_agc_f`
+- label: "RMS AGC (Float)"
+- category: `[Satellites]/Level Controllers`
+- paramètres: `alpha` (défaut 1e-2), `reference` (défaut 1.0)
+- dtype: float en entrée et sortie
+- callbacks: `set_alpha`, `set_reference`
+
+Ajouté au `grc/hier/CMakeLists.txt`.
+
+### Audit RMS AGC complet
+
+L'implémentation C++ des deux variantes (cc et ff) a été auditée :
+- **Algorithme** : IIR EMA de |z|² avec gain par sample = reference/sqrt(rms_sq) — correct
+- **VOLK** : `volk_32fc_magnitude_squared_32f` (cc), `volk_32f_x2_multiply_32f` (ff) — optimisé
+- **Stabilité numérique** : guard `rms_sq > 1e-20f` avant division — OK
+- **Résultat** : aucun bug, implémentation correcte et optimisée
+
+### Fichiers créés/modifiés
+
+| Fichier | Action |
+|:---|:---|
+| `grc/hier/satellites_rms_agc_f.py.block.yml` | **Créé** |
+| `grc/hier/CMakeLists.txt` | Modifié — ajout YAML |

@@ -23,6 +23,7 @@ install(FILES
     satellites_ccsds_viterbi.py.block.yml
     satellites_pn9_scrambler.py.block.yml
     satellites_rms_agc.py.block.yml
+    satellites_rms_agc_f.py.block.yml
     satellites_si4463_scrambler.py.block.yml
     satellites_sync_to_pdu.py.block.yml
     satellites_sync_to_pdu_packed.py.block.yml
