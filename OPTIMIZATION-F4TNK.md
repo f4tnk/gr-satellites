@@ -1827,3 +1827,18 @@ When `--zmq_sub` is provided, gr-satellites uses `zeromq.sub_source()` instead o
 | **satnogs-client** | `grsat.py`: `--zmq_sub ipc:///tmp/grsat_iq` (replaces `--udp --udp_raw --udp_port`) | `e20169e` |
 
 > Last updated: 2026-06 — Session 22 (ZMQ IPC input)
+
+---
+
+### 📌 Architecture Note — SDR Server Decoupling (2026-06)
+
+> No gr-satellites code changes — all changes in `satnogs-flowgraphs` repo.
+
+The upstream IQ chain was fully refactored:
+- `soapy_source` removed from all `.grc` flowgraphs → replaced by `zmq_sub_source` from `ipc:///tmp/sdr_iq`
+- New `sdr_persistent_server.py` handles SDR acquisition (multi-SDR: UHD, RTL-SDR, Airspy, SDRplay, etc.)
+- IQ send is now zero-copy (`zmq.send(buf, copy=False)`)
+
+Updated IQ chain: `SDR server (SoapySDR) → ZMQ PUB ipc:///tmp/sdr_iq → flowgraph (ZMQ SUB → DSP) → ZMQ PUB ipc:///tmp/grsat_iq → gr-satellites (ZMQ SUB)`
+
+See `satnogs-flowgraphs/OPTIMIZATION-F4TNK.md` Sessions 23-27 for details.
