@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 
-from gnuradio import gr, blocks, audio
+from gnuradio import gr, blocks, audio, zeromq
 
 if gr.api_version() != '9':
     from gnuradio import network
@@ -103,6 +103,9 @@ def argument_parser():
         help='Soundcard device input')
     p_sources.add_argument(
         '--udp', action='store_true', help='Use UDP input')
+    p_sources.add_argument(
+        '--zmq_sub', type=str, metavar='URI',
+        help='ZMQ SUB IQ source URI (e.g. ipc:///tmp/sdr_iq)')
     p_sources.add_argument('--kiss_in', help='KISS input file')
     p_sources.add_argument('--sigmf', help='SigMF input file')
 
@@ -261,6 +264,8 @@ class gr_satellites_top_block(gr.top_block):
             return self.setup_audio_input()
         elif self.options.udp is True:
             return self.setup_udp_input()
+        elif self.options.zmq_sub is not None:
+            return self.setup_zmq_sub_input()
         elif self.options.kiss_in is not None:
             return self.setup_kiss_input()
         elif self.options.sigmf is not None:
@@ -329,6 +334,17 @@ class gr_satellites_top_block(gr.top_block):
             self.input = self.float_to_complex
         else:
             self.input = self.short_to_float
+
+    def setup_zmq_sub_input(self):
+        """Set up ZMQ SUB source for receiving IQ from a persistent SDR server.
+
+        Receives raw complex64 or float32 samples via ZMQ PUB/SUB IPC.
+        This is faster than UDP (zero-copy, no packet overhead) and allows
+        gr_satellites to share the same IQ stream as the demodulator flowgraph.
+        """
+        size = gr.sizeof_gr_complex if self.options.iq else gr.sizeof_float
+        self.input = zeromq.sub_source(
+            size, 1, self.options.zmq_sub, 100, False, -1, '', False)
 
     def setup_kiss_input(self):
         self.input = datasources.kiss_file_source(self.options.kiss_in)
