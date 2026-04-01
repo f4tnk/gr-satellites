@@ -22,6 +22,7 @@ Station: SatNOGS #3762 — AirSpy R2 @ 2.5 MSPS, x86-64 (AVX2 + BMI2)
 | `c065ec5d` | Session 13: Viterbi uint32_t + KISS C++ 22× + LTO + doppler volk + HDLC persistent bufs |
 | `744e1ddc` | Session 14-15: 2-bit HDLC EC + CRC LFSR-walk + Viterbi flat trellis |
 | `0da23a6f` | Session 16: AX.25 callsign validation — eliminates false positives from noise |
+| `510ec39e` | **feat(zmq)**: `--zmq_sub` IPC input — replaces UDP transport from flowgraph |
 
 ---
 
@@ -1764,3 +1765,65 @@ L'implémentation C++ des deux variantes (cc et ff) a été auditée :
 |:---|:---|
 | `grc/hier/satellites_rms_agc_f.py.block.yml` | **Créé** |
 | `grc/hier/CMakeLists.txt` | Modifié — ajout YAML |
+
+---
+
+## Session 22 — ZMQ IPC Input: Replace UDP with ZMQ SUB
+
+**Date**: 2026-06 — Commit `510ec39e` — Pushed to `origin/master-f4tnk`
+
+### Problem
+
+gr-satellites received IQ samples from the SatNOGS flowgraph via `network.udp_source()` (localhost UDP). This architecture caused:
+- **Packet loss** at high sample rates (57600 sps → 313 pkt/s) due to UDP's lack of backpressure
+- **Scheduler pathology**: Sessions 3/5/8 documented the `source_zeros` dilemma — `True` caused 300-400% CPU, `False` caused 93-95% drops during scheduler init
+- **Complex buffer tuning**: sysctl `rmem_max` 128 MB, gnuradio `udp.conf` 64 MB, per-socket monitoring via `/proc/net/udp`
+- **Startup race**: 3-30s wait for GR scheduler to create the UDP socket (`grsat.py` polled `/proc/net/udp`)
+
+All UDP issues documented in Sessions 3, 5, and 8 are now **obsolete** — the fundamental transport has been replaced.
+
+### Solution — ZMQ SUB over Unix IPC
+
+Added `--zmq_sub URI` CLI argument and `setup_zmq_sub_input()` method to `apps/gr_satellites`:
+
+```python
+# New CLI argument
+parser.add_argument('--zmq_sub', type=str, default=None,
+                    help='ZMQ SUB source URI (e.g. ipc:///tmp/grsat_iq)')
+
+# New method — replaces setup_udp_input()
+def setup_zmq_sub_input(self):
+    from gnuradio import zeromq
+    zmq_source = zeromq.sub_source(
+        gr.sizeof_gr_complex, 1, self._zmq_sub_uri, 100, False, -1, '')
+    self.connect(zmq_source, self)
+```
+
+When `--zmq_sub` is provided, gr-satellites uses `zeromq.sub_source()` instead of `network.udp_source()`. The ZMQ SUB socket connects to the flowgraph's ZMQ PUB sink at `ipc:///tmp/grsat_iq`.
+
+### Why ZMQ IPC eliminates all UDP issues
+
+| UDP Issue (Sessions 3/5/8) | ZMQ IPC Solution |
+|:---|:---|
+| **93-95% packet loss** (no backpressure) | ZMQ HWM flow control — publisher blocks or drops oldest |
+| **300-400% CPU** (`source_zeros=True`) | ZMQ SUB blocks on `recv()` when idle — zero CPU |
+| **source_zeros dilemma** | Gone — ZMQ semantics: block until data, no zero-padding |
+| **Scheduler init race** (3-30s) | ZMQ connects instantly, buffers until data arrives |
+| **sysctl tuning** (rmem_max 128 MB) | Not needed — Unix domain socket, no kernel UDP buffers |
+| **`/proc/net/udp` monitoring** | Not needed — no UDP sockets to monitor |
+| **MTU fragmentation** (1472B) | No fragmentation — arbitrary message sizes |
+
+### Files modified
+
+| File | Change |
+|:---|:---|
+| `apps/gr_satellites` | Added `--zmq_sub`, `setup_zmq_sub_input()`, zeromq import |
+
+### Cross-repo dependencies
+
+| Repo | Change | Commit |
+|:---|:---|:---|
+| **satnogs-flowgraphs** | 15 `.grc` files: `network_udp_sink` → `zeromq_pub_sink` (`ipc:///tmp/grsat_iq`) | `776588a` |
+| **satnogs-client** | `grsat.py`: `--zmq_sub ipc:///tmp/grsat_iq` (replaces `--udp --udp_raw --udp_port`) | `e20169e` |
+
+> Last updated: 2026-06 — Session 22 (ZMQ IPC input)
