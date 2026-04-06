@@ -50,6 +50,7 @@ class kiss_file_sink(gr.hier_block2, options_block):
                                 initial_timestamp=initial_timestamp)
         self.pdu2tag = pdu_to_tagged_stream(byte_t, 'packet_len')
         self.filesink = blocks.file_sink(gr.sizeof_char, file, append)
+        self.filesink.set_unbuffered(True)
 
         self.connect(self.pdu2tag, self.filesink)
         self.msg_connect((self, 'in'), (self.crc_strip, 'in'))
