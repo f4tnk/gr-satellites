@@ -204,6 +204,18 @@ class gr_satellites_flowgraph(gr.hier_block2):
                           file=sys.stderr)
 
             for key, transmitter in transmitters.items():
+                framing = transmitter.get('framing', '')
+                modulation = transmitter.get('modulation', '')
+                if framing not in self._deframer_hooks:
+                    print(f'gr_satellites: skipping transmitter '
+                          f'"{key}" — unknown framing "{framing}"',
+                          file=sys.stderr)
+                    continue
+                if modulation not in self._demodulator_hooks:
+                    print(f'gr_satellites: skipping transmitter '
+                          f'"{key}" — unknown modulation "{modulation}"',
+                          file=sys.stderr)
+                    continue
                 self._init_demodulator_deframer(key, transmitter)
 
     def _init_datasink(self, key, info):
@@ -216,14 +228,25 @@ class gr_satellites_flowgraph(gr.hier_block2):
             info: the body of the datasink entry in SatYAML
         """
         if 'decoder' in info:
-            ds = getattr(datasinks, info['decoder'])
+            ds = getattr(datasinks, info['decoder'], None)
+            if ds is None:
+                print(f'gr_satellites: skipping datasink '
+                      f'"{key}" — unknown decoder "{info["decoder"]}"',
+                      file=sys.stderr)
+                return
             try:
                 datasink = ds(options=self.options)
             except TypeError:  # raised if ds doesn't have an options parameter
                 datasink = ds()
         elif 'telemetry' in info:
-            datasink = datasinks.telemetry_parser(info['telemetry'],
-                                                  options=self.options)
+            try:
+                datasink = datasinks.telemetry_parser(info['telemetry'],
+                                                      options=self.options)
+            except AttributeError:
+                print(f'gr_satellites: skipping datasink '
+                      f'"{key}" — unknown telemetry "{info["telemetry"]}"',
+                      file=sys.stderr)
+                return
         elif 'files' in info:
             datasink = datasinks.file_receiver(info['files'],
                                                options=self.options)
@@ -428,10 +451,12 @@ class gr_satellites_flowgraph(gr.hier_block2):
                 try_add_options(datasinks.file_receiver, data_options)
 
         for transmitter in satyaml['transmitters'].values():
-            try_add_options(cls._demodulator_hooks[transmitter['modulation']],
-                            demod_options)
-            try_add_options(cls._deframer_hooks[transmitter['framing']],
-                            deframe_options)
+            demod_hook = cls._demodulator_hooks.get(transmitter['modulation'])
+            if demod_hook is not None:
+                try_add_options(demod_hook, demod_options)
+            deframe_hook = cls._deframer_hooks.get(transmitter['framing'])
+            if deframe_hook is not None:
+                try_add_options(deframe_hook, deframe_options)
 
     @staticmethod
     def _modulation_family(mod):
