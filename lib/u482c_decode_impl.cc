@@ -102,9 +102,6 @@ void u482c_decode_impl::msg_handler(pmt::pmt_t pmt_msg)
 
     // decode length field
     uint32_t length_field = (d_data[0] << 16) | (d_data[1] << 8) | d_data[2];
-    /* DEBUG: print raw Golay codeword */
-    fprintf(stderr, "[U482C-GOLAY-RAW] raw=%02X %02X %02X coded=0x%06X\n",
-            d_data[0], d_data[1], d_data[2], length_field);
     auto golay_res = decode_golay24(&length_field);
     if (golay_res < 0) {
         if (d_verbose) {
@@ -157,14 +154,6 @@ void u482c_decode_impl::msg_handler(pmt::pmt_t pmt_msg)
 
     // RS decoding
     if ((d_rs == ON) || (d_rs == AUTO && rs_flag)) {
-        /* DEBUG: print first 12 bytes before RS decode */
-        {
-            char dbg[256];
-            int n = snprintf(dbg, sizeof(dbg), "[U482C-DBG] len=%d pad=%d pdu:", (int)rx_len, (int)(RS_LEN-rx_len));
-            for (int di = 0; di < 12 && di < (int)rx_len; di++)
-                n += snprintf(dbg+n, sizeof(dbg)-n, " %02X", packet[di]);
-            fprintf(stderr, "%s\n", dbg);
-        }
         auto rs_res = decode_rs_8(packet, NULL, 0, RS_LEN - rx_len);
         rx_len -= 32;
 
